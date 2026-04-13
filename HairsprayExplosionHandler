@@ -1,0 +1,84 @@
+-- HairsprayExplosionHandler (Script in ServerScriptService)
+-- Handles server-side explosion hit detection for the Hairspray projectile.
+-- Also forwards ability cooldown updates to the HUD.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+local HairsprayExplode = Remotes:WaitForChild("HairsprayExplode")
+
+local ExplosionVFX = Remotes:FindFirstChild("ShowExplosionVFX") or Instance.new("RemoteEvent", Remotes)
+ExplosionVFX.Name = "ShowExplosionVFX"
+
+local HUDCooldownUpdate = Remotes:FindFirstChild("HUDCooldownUpdate") or Instance.new("RemoteEvent", Remotes)
+HUDCooldownUpdate.Name = "HUDCooldownUpdate"
+
+local AbilityCooldownUpdate = Remotes:WaitForChild("AbilityCooldownUpdate")
+local CameraShake = Remotes:FindFirstChild("CameraShake") or Instance.new("RemoteEvent", Remotes)
+CameraShake.Name = "CameraShake"
+
+-- Forward cooldown events from tools to HUD
+AbilityCooldownUpdate.OnServerEvent:Connect(function(player, abilityName, duration)
+	HUDCooldownUpdate:FireClient(player, abilityName, duration)
+	print("[COOLDOWN] " .. player.Name .. " used " .. abilityName .. " (" .. duration .. "s cooldown)")
+end)
+
+-- Explosion hit detection
+HairsprayExplode.OnServerEvent:Connect(function(player, explosionPos, radius)
+	-- Anti-exploit: player must be within reasonable range
+	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+	if (root.Position - explosionPos).Magnitude > 80 then
+		warn("[EXPLOIT] " .. player.Name .. " hairspray explosion too far away.")
+		return
+	end
+
+	-- Show explosion VFX on all clients
+	ExplosionVFX:FireAllClients(explosionPos)
+	SoundService.FireToAll("HairsprayExplode", explosionPos)
+
+	local hitAnyone = false
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Team and p.Team.Name == "Critics" then
+			local pRoot = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+			local hum = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+
+			if pRoot and hum and (pRoot.Position - explosionPos).Magnitude <= radius then
+				if not hum:GetAttribute("IsSlowed") then
+					hitAnyone = true
+					hum:SetAttribute("IsSlowed", true)
+
+					local originalSpeed = hum.WalkSpeed
+					hum.WalkSpeed = originalSpeed * 0.5
+
+					-- Camera shake for the hit critic
+					CameraShake:FireClient(p)
+					SoundService.FireToClient(p, "StunShake")
+
+					SoundService.FireToAll("AbilityHit", pRoot.Position)
+
+					task.delay(5, function()
+						if hum then
+							hum.WalkSpeed = originalSpeed
+							hum:SetAttribute("IsSlowed", nil)
+						end
+					end)
+				end
+			end
+		end
+	end
+
+	if not hitAnyone then
+		SoundService.FireToClient(player, "AbilityMiss")
+	end
+
+	-- Charge for hitting
+	if hitAnyone and _G.ShowstopperService then
+		_G.ShowstopperService.OnAbilityHit(player)
+	end
+end)
