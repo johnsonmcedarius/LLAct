@@ -1,36 +1,45 @@
 -- MovementSystem (LocalScript in StarterCharacterScripts)
--- Infinite sprint. Fashion Dash on Q (PC), DashButton (Mobile), ButtonR1 (Xbox).
--- No stamina drain. Dash has its own cooldown.
+-- Infinite sprint. Fashion Dash on Q / Xbox R1 / Mobile button.
+-- Fires DashCooldownUpdate remote so HUDController can show cooldown overlay.
 
--- Services
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local ContextActionService = game:GetService("ContextActionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- Speed Settings
-local WALK_SPEED = 16
-local SPRINT_SPEED = 24
+local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
 
--- Dash Settings
-local DASH_SPEED = 80
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local DashCooldownUpdate = Remotes:FindFirstChild("DashCooldownUpdate") or Instance.new("RemoteEvent", Remotes)
+DashCooldownUpdate.Name = "DashCooldownUpdate"
+
+-- Close-dodge detection remote (fire to server when dash happens near a critic)
+local CloseDodgeRemote = Remotes:FindFirstChild("CloseDodgeCheck") or Instance.new("RemoteEvent", Remotes)
+CloseDodgeRemote.Name = "CloseDodgeCheck"
+
+-- Speed Settings
+local WALK_SPEED    = 16
+local SPRINT_SPEED  = 24
+local DASH_SPEED    = 80
 local DASH_DURATION = 0.18
 local DASH_COOLDOWN = 4.0
+local CLOSE_DODGE_RANGE = 8 -- studs to a critic to count as a close dodge
 
 -- FOV
 local NORMAL_FOV = 70
 local SPRINT_FOV = 80
-local DASH_FOV = 95
+local DASH_FOV   = 95
 local FOV_TWEEN_TIME = 0.25
 
 -- Head Bob
-local BOB_SPEED = 14
+local BOB_SPEED  = 14
 local BOB_AMOUNT = 0.15
-local bobTime = 0
+local bobTime    = 0
 
 -- Sprint Animation
 local SPRINT_ANIMATION_ID = "rbxassetid://130150958024919"
@@ -51,7 +60,6 @@ local function setupCharacter(char)
 	character = char
 	humanoid = char:WaitForChild("Humanoid")
 	root = char:WaitForChild("HumanoidRootPart")
-
 	humanoid.WalkSpeed = WALK_SPEED
 	camera.FieldOfView = NORMAL_FOV
 
@@ -66,7 +74,6 @@ local function setupCharacter(char)
 	sprintTrack = animator:LoadAnimation(anim)
 	sprintTrack.Priority = Enum.AnimationPriority.Action
 
-	-- Dust attachment
 	local attachment = Instance.new("Attachment")
 	attachment.Position = Vector3.new(0, -2.8, 0)
 	attachment.Parent = root
@@ -107,6 +114,24 @@ local function tweenFov(target)
 end
 
 -------------------------------------------------
+-- Close-Dodge detection
+-------------------------------------------------
+local function checkCloseDodge()
+	if not root then return end
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= player and p.Team and p.Team.Name == "Critics" then
+			local criticRoot = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+			if criticRoot and (root.Position - criticRoot.Position).Magnitude <= CLOSE_DODGE_RANGE then
+				-- Tell server: this counts as a close dodge
+				CloseDodgeRemote:FireServer()
+				print("[DASH] Close dodge bonus triggered!")
+				return
+			end
+		end
+	end
+end
+
+-------------------------------------------------
 -- Fashion Dash
 -------------------------------------------------
 local function performDash()
@@ -115,34 +140,31 @@ local function performDash()
 
 	local now = os.clock()
 	if now < dashCooldownUntil then
-		print("[DASH] On cooldown. " .. string.format("%.1f", dashCooldownUntil - now) .. "s remaining.")
+		print("[DASH] On cooldown: " .. string.format("%.1f", dashCooldownUntil - now) .. "s")
 		return
 	end
 
 	dashing = true
 	dashCooldownUntil = now + DASH_COOLDOWN
 
-	print("[DASH] Fashion Dash activated!")
+	-- Notify HUD
+	DashCooldownUpdate:FireClient(player, DASH_COOLDOWN)
 
-	local direction = humanoid.MoveDirection
-	if direction.Magnitude < 0.1 then
-		direction = root.CFrame.LookVector
-	end
+	-- Check close dodge before moving
+	checkCloseDodge()
 
 	tweenFov(DASH_FOV)
-
-	-- Burst of speed
 	humanoid.WalkSpeed = DASH_SPEED
 
-	-- Dash dust burst
 	if dustEmitter then
 		dustEmitter.Rate = 120
 		dustEmitter.Enabled = true
 	end
 
+	SoundService.PlayLocal("FashionDash")
+
 	task.wait(DASH_DURATION)
 
-	-- Restore to sprint speed if still sprinting
 	if humanoid then
 		humanoid.WalkSpeed = sprinting and SPRINT_SPEED or WALK_SPEED
 	end
@@ -156,46 +178,46 @@ local function performDash()
 end
 
 -------------------------------------------------
+-- Close-Dodge server handler (separate script or inline)
+-------------------------------------------------
+-- Put this in a Script in ServerScriptService:
+--[[
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local CloseDodgeCheck = Remotes:WaitForChild("CloseDodgeCheck")
+CloseDodgeCheck.OnServerEvent:Connect(function(player)
+    if _G.ShowstopperService then
+        _G.ShowstopperService.OnCloseDodge(player)
+    end
+end)
+--]]
+
+-------------------------------------------------
 -- Input Bindings
 -------------------------------------------------
-
--- PC: Q key
-UIS.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then return end
-	if input.KeyCode == Enum.KeyCode.Q then
-		performDash()
-	end
-	if input.KeyCode == Enum.KeyCode.LeftShift then
-		sprinting = true
-	end
+UIS.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.Q then performDash() end
+	if input.KeyCode == Enum.KeyCode.LeftShift then sprinting = true end
 end)
 
 UIS.InputEnded:Connect(function(input)
-	if input.KeyCode == Enum.KeyCode.LeftShift then
-		sprinting = false
-	end
+	if input.KeyCode == Enum.KeyCode.LeftShift then sprinting = false end
 end)
 
--- Xbox: R1 (ButtonR1)
--- Mobile: TouchButton via ContextActionService
-local DASH_ACTION = "FashionDash"
-
 ContextActionService:BindAction(
-	DASH_ACTION,
+	"FashionDash",
 	function(_, inputState)
-		if inputState == Enum.UserInputState.Begin then
-			performDash()
-		end
+		if inputState == Enum.UserInputState.Begin then performDash() end
 	end,
-	true, -- create mobile button
-	Enum.KeyCode.ButtonR1 -- Xbox R1
+	true,
+	Enum.KeyCode.ButtonR1
 )
 
--- Style the mobile button (you can move this in the UI later)
-local button = ContextActionService:GetButton(DASH_ACTION)
-if button then
-	button.Text = "DASH"
-	button.BackgroundColor3 = Color3.fromRGB(180, 80, 255)
+local dashBtn = ContextActionService:GetButton("FashionDash")
+if dashBtn then
+	dashBtn.Text = "DASH"
+	dashBtn.BackgroundColor3 = Color3.fromRGB(180, 80, 255)
 end
 
 -------------------------------------------------
@@ -210,17 +232,14 @@ RunService.RenderStepped:Connect(function(dt)
 	if sprinting and isMoving then
 		humanoid.WalkSpeed = SPRINT_SPEED
 		tweenFov(SPRINT_FOV)
-
 		bobTime += dt * BOB_SPEED
 		camera.CFrame *= CFrame.new(0, math.sin(bobTime) * BOB_AMOUNT, 0)
-
 		if sprintTrack and not sprintTrack.IsPlaying then sprintTrack:Play() end
 		if dustEmitter then dustEmitter.Enabled = true end
 	else
 		humanoid.WalkSpeed = WALK_SPEED
 		tweenFov(NORMAL_FOV)
 		bobTime = 0
-
 		if sprintTrack and sprintTrack.IsPlaying then sprintTrack:Stop() end
 		if dustEmitter then dustEmitter.Enabled = false end
 	end
