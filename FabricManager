@@ -1,0 +1,279 @@
+-- FabricManager (Script in ServerScriptService)
+-- Uses CollectionService tags: "FabricRacks" (static racks), "FabricBins" (deposit zones)
+-- Racks: instant pickup via BillboardGui proximity, 5s cooldown + transparency
+-- Bins: massive collision hitbox for drive-by deposits
+-- 75% progress fires TrendTrackerActivate to Critics
+-- Proximity snip/zip sound when near rack or passable teammate
+
+-- Services
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local Teams = game:GetService("Teams")
+local Debris = game:GetService("Debris")
+
+-- Remotes
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local NotifyCritics = Remotes:WaitForChild("NotifyCritics")
+local UpdateFabricUI = Remotes:WaitForChild("UpdateFabricUI")
+
+-- Create remotes if they don't exist yet
+local TrendTrackerActivate = Remotes:FindFirstChild("TrendTrackerActivate") or Instance.new("RemoteEvent", Remotes)
+TrendTrackerActivate.Name = "TrendTrackerActivate"
+
+local PlayProximitySound = Remotes:FindFirstChild("PlayProximitySound") or Instance.new("RemoteEvent", Remotes)
+PlayProximitySound.Name = "PlayProximitySound"
+
+-- Round state
+local StatusValues = ReplicatedStorage:WaitForChild("StatusValues")
+local StatusText = StatusValues:WaitForChild("StatusText")
+
+-- Configuration
+local MAX_INTERACTION_DISTANCE = 30
+local RACK_COOLDOWN = 5
+local BIN_HITBOX_SIZE = Vector3.new(10, 8, 10) -- Large drive-by collision area
+local SOUND_RANGE = 10 -- studs for snip/zip sound trigger
+
+local Config = {
+	TotalFabricNeeded = 5,
+	ExitDoorName = "RunwayExit",
+	CriticTeamName = "Critics",
+	DesignerTeamName = "Designers",
+}
+
+-- State
+local globalFabricCount = 0
+local lastFiredPercentage = -1
+local trendTrackerFired = false
+
+-------------------------------------------------
+-- Helpers
+-------------------------------------------------
+
+local function alertCritics(rack)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Team and p.Team.Name == Config.CriticTeamName then
+			NotifyCritics:FireClient(p, rack)
+		end
+	end
+end
+
+local function openRunwayExit()
+	print("[FABRIC] Collection complete. Opening Runway Exit.")
+	local exitDoor = workspace:FindFirstChild(Config.ExitDoorName)
+	if exitDoor then
+		exitDoor:SetAttribute("IsOpen", true)
+		exitDoor.Transparency = 0.5
+		exitDoor.CanCollide = false
+	else
+		warn("[FABRIC] Runway Exit not found in Workspace: " .. Config.ExitDoorName)
+	end
+end
+
+local function addGlobalFabric(amount)
+	globalFabricCount += amount
+	local percentage = math.clamp(math.floor((globalFabricCount / Config.TotalFabricNeeded) * 100), 0, 100)
+
+	if percentage ~= lastFiredPercentage then
+		print("[FABRIC] Stitch progress: " .. percentage .. "%")
+		UpdateFabricUI:FireAllClients(percentage)
+		lastFiredPercentage = percentage
+	end
+
+	-- 75% Trend Tracker buff for Critics
+	if percentage >= 75 and not trendTrackerFired then
+		trendTrackerFired = true
+		print("[FABRIC] 75% reached. Activating Trend Tracker for Critics.")
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p.Team and p.Team.Name == Config.CriticTeamName then
+				TrendTrackerActivate:FireClient(p, 20) -- 20 second duration
+			end
+		end
+	end
+
+	if globalFabricCount >= Config.TotalFabricNeeded then
+		openRunwayExit()
+	end
+end
+
+local function resetManager()
+	globalFabricCount = 0
+	lastFiredPercentage = -1
+	trendTrackerFired = false
+	UpdateFabricUI:FireAllClients(0)
+	print("[SYSTEM] Fabric progress reset for new round.")
+end
+
+-------------------------------------------------
+-- Give fabric tool to player
+-------------------------------------------------
+local function giveFabricTool(player)
+	local fbToolAsset = ReplicatedStorage:FindFirstChild("Assets") and ReplicatedStorage.Assets:FindFirstChild("FBRoll")
+	if fbToolAsset then
+		local newTool = fbToolAsset:Clone()
+		newTool.Parent = player.Backpack
+	else
+		warn("[FABRIC] FBRoll tool missing from ReplicatedStorage.Assets!")
+	end
+end
+
+local function playerHasFabric(player)
+	return player.Backpack:FindFirstChild("FBRoll")
+		or (player.Character and player.Character:FindFirstChild("FBRoll"))
+end
+
+-------------------------------------------------
+-- Fabric Rack Setup
+-- Tag: "FabricRacks"
+-- Instant pickup via ProximityPrompt (HoldDuration 0)
+-- 5s rack cooldown with transparency
+-------------------------------------------------
+local function setupFabricRack(rack)
+	-- Remove stale prompts
+	for _, child in ipairs(rack:GetDescendants()) do
+		if child:IsA("ProximityPrompt") then child:Destroy() end
+	end
+
+	rack:SetAttribute("IsOnCooldown", false)
+
+	-- The pickup prompt (instant, no hold)
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ActionText = "Collect Fabric"
+	prompt.ObjectText = "Fabric Rack"
+	prompt.HoldDuration = 0 -- Instant
+	prompt.RequiresLineOfSight = false
+	prompt.MaxActivationDistance = 8
+	prompt.Parent = rack
+
+	prompt.Triggered:Connect(function(player)
+		if not (player.Team and player.Team.Name == Config.DesignerTeamName) then return end
+		if rack:GetAttribute("IsOnCooldown") then return end
+		if playerHasFabric(player) then
+			print("[FABRIC] " .. player.Name .. " already carrying a roll.")
+			return
+		end
+
+		-- Anti-exploit distance check
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if not root then return end
+		local rackPart = rack:IsA("BasePart") and rack or rack:FindFirstChildWhichIsA("BasePart")
+		if rackPart and (root.Position - rackPart.Position).Magnitude > MAX_INTERACTION_DISTANCE then
+			warn("[EXPLOIT] " .. player.Name .. " tried to grab fabric from too far.")
+			return
+		end
+
+		print("[FABRIC] " .. player.Name .. " grabbed a roll from rack.")
+
+		-- Give the tool
+		giveFabricTool(player)
+
+		-- Notify critics
+		alertCritics(rack)
+
+		-- Fire proximity sound to nearby designers
+		PlayProximitySound:FireAllClients(rack, "SnipZip")
+
+		-- Rack cooldown
+		rack:SetAttribute("IsOnCooldown", true)
+		prompt.Enabled = false
+
+		local rackBase = rack:IsA("BasePart") and rack or rack:FindFirstChildWhichIsA("BasePart")
+		if rackBase then
+			rackBase.Transparency = 0.7
+		end
+
+		task.delay(RACK_COOLDOWN, function()
+			if not rack or not rack.Parent then return end
+			rack:SetAttribute("IsOnCooldown", false)
+			prompt.Enabled = true
+			if rackBase and rackBase.Parent then
+				rackBase.Transparency = 0
+			end
+			print("[FABRIC] Rack refreshed.")
+		end)
+	end)
+end
+
+-------------------------------------------------
+-- Fabric Bin Setup
+-- Tag: "FabricBins"
+-- Massive collision hitbox for drive-by dunks
+-------------------------------------------------
+local function setupFabricBin(bin)
+	-- Remove old prompts
+	for _, child in ipairs(bin:GetDescendants()) do
+		if child:IsA("ProximityPrompt") then child:Destroy() end
+	end
+
+	-- Expand or create the bin hitbox
+	local hitbox = bin:FindFirstChild("DepositHitbox")
+	if not hitbox then
+		hitbox = Instance.new("Part")
+		hitbox.Name = "DepositHitbox"
+		hitbox.Size = BIN_HITBOX_SIZE
+		hitbox.Transparency = 1
+		hitbox.CanCollide = false
+		hitbox.Anchored = true
+
+		local binBase = bin:IsA("BasePart") and bin or bin:FindFirstChildWhichIsA("BasePart")
+		if binBase then
+			hitbox.CFrame = binBase.CFrame
+		end
+		hitbox.Parent = bin
+	else
+		hitbox.Size = BIN_HITBOX_SIZE
+	end
+
+	-- Deposit on touch
+	local depositing = {}
+
+	hitbox.Touched:Connect(function(hit)
+		local character = hit.Parent
+		local player = Players:GetPlayerFromCharacter(character)
+		if not player then return end
+		if not (player.Team and player.Team.Name == Config.DesignerTeamName) then return end
+		if depositing[player.UserId] then return end
+
+		local fabricTool = character:FindFirstChild("FBRoll") or player.Backpack:FindFirstChild("FBRoll")
+		if not fabricTool then return end
+
+		depositing[player.UserId] = true
+
+		print("[FABRIC] " .. player.Name .. " drive-by dunked fabric into the bin!")
+		fabricTool:Destroy()
+		addGlobalFabric(1)
+
+		if _G.DataManager then
+			_G.DataManager.AddXP(player, 25)
+			_G.DataManager.AddCoins(player, 10)
+		end
+
+		task.delay(0.5, function()
+			depositing[player.UserId] = nil
+		end)
+	end)
+end
+
+-------------------------------------------------
+-- Round Reset
+-------------------------------------------------
+StatusText:GetPropertyChangedSignal("Value"):Connect(function()
+	local val = StatusText.Value
+	if val == "Intermission" or val == "Selecting Map..." or val == "Round Over!" then
+		resetManager()
+	end
+end)
+
+-------------------------------------------------
+-- Initialize
+-------------------------------------------------
+for _, rack in ipairs(CollectionService:GetTagged("FabricRacks")) do
+	setupFabricRack(rack)
+end
+
+for _, bin in ipairs(CollectionService:GetTagged("FabricBins")) do
+	setupFabricBin(bin)
+end
+
+CollectionService:GetInstanceAddedSignal("FabricRacks"):Connect(setupFabricRack)
+CollectionService:GetInstanceAddedSignal("FabricBins"):Connect(setupFabricBin)
