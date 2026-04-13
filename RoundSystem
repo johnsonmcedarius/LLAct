@@ -1,0 +1,209 @@
+-- RoundSystem (Script in ServerScriptService)
+-- Timer displayed as M:SS format via StatusValues.Timer (IntValue)
+-- The client should read TimerValue and format it. This script also sets
+-- StatusText to a pre-formatted string for any legacy UI.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local Teams = game:GetService("Teams")
+
+-- Settings
+local INTERMISSION_TIME = 10
+local ROUND_TIME = 300
+local MIN_PLAYERS = 2
+
+-- Paths
+local MapsFolder = ReplicatedStorage:WaitForChild("Maps")
+local StatusValues = ReplicatedStorage:WaitForChild("StatusValues")
+local StatusText = StatusValues:WaitForChild("StatusText")
+local TimerValue = StatusValues:WaitForChild("Timer")
+
+local LobbyTeam = Teams:WaitForChild("Lobby")
+local DesignersTeam = Teams:WaitForChild("Designers")
+local CriticsTeam = Teams:WaitForChild("Critics")
+
+local currentMapModel = nil
+local lobbySpawn = Workspace:FindFirstChild("LobbySpawn")
+
+-------------------------------------------------
+-- Timer Format Helper
+-------------------------------------------------
+local function formatTime(seconds)
+	local m = math.floor(seconds / 60)
+	local s = seconds % 60
+	return string.format("%d:%02d", m, s)
+end
+
+-------------------------------------------------
+-- Win Rewards
+-------------------------------------------------
+local function rewardWinningTeam(teamName)
+	print("[SYSTEM] Rewarding team: " .. teamName)
+	for _, player in pairs(Players:GetPlayers()) do
+		if player.Team and player.Team.Name == teamName then
+			if _G.DataManager then
+				_G.DataManager.AddXP(player, 100)
+				_G.DataManager.AddCoins(player, 50)
+				print("[REWARD] " .. player.Name .. " received win payout.")
+			end
+		end
+	end
+end
+
+-------------------------------------------------
+-- Teleport
+-------------------------------------------------
+local function teleportPlayers(playersTable, targetCFrame)
+	for _, player in pairs(playersTable) do
+		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			local offset = Vector3.new(math.random(-3, 3), 3, math.random(-3, 3))
+			player.Character:PivotTo(targetCFrame + offset)
+		end
+	end
+end
+
+local function resetTeams()
+	for _, player in pairs(Players:GetPlayers()) do
+		player.Team = LobbyTeam
+	end
+end
+
+-------------------------------------------------
+-- Main Game Loop
+-------------------------------------------------
+while true do
+	ReplicatedStorage:SetAttribute("AllDesignersFrozen", false)
+
+	resetTeams()
+	if currentMapModel then
+		currentMapModel:Destroy()
+		currentMapModel = nil
+	end
+
+	-- Waiting for players
+	while #Players:GetPlayers() < MIN_PLAYERS do
+		StatusText.Value = "Waiting for players... (Need " .. MIN_PLAYERS .. "+)"
+		TimerValue.Value = 0
+		task.wait(1)
+	end
+
+	-- Intermission
+	for i = INTERMISSION_TIME, 0, -1 do
+		StatusText.Value = "Intermission"
+		TimerValue.Value = i
+		task.wait(1)
+	end
+
+	-- Map Selection
+	StatusText.Value = "Selecting Map..."
+	task.wait(1)
+
+	local availableMaps = MapsFolder:GetChildren()
+	if #availableMaps > 0 then
+		local randomMap = availableMaps[math.random(1, #availableMaps)]
+		currentMapModel = randomMap:Clone()
+		currentMapModel.Parent = Workspace
+
+		local designerSpawn = currentMapModel:FindFirstChild("Spawn")
+		local criticSpawn = currentMapModel:FindFirstChild("CriticSpawn") or designerSpawn
+
+		if designerSpawn then
+			-- Assign teams
+			local allPlayers = Players:GetPlayers()
+			local numCritics = #allPlayers >= 4 and 2 or 1
+
+			-- Shuffle
+			for i = #allPlayers, 2, -1 do
+				local j = math.random(i)
+				allPlayers[i], allPlayers[j] = allPlayers[j], allPlayers[i]
+			end
+
+			local selectedCriticNames = {}
+			for i = 1, numCritics do
+				allPlayers[i].Team = CriticsTeam
+				table.insert(selectedCriticNames, allPlayers[i].Name)
+			end
+			for i = numCritics + 1, #allPlayers do
+				allPlayers[i].Team = DesignersTeam
+			end
+
+			if #selectedCriticNames == 1 then
+				StatusText.Value = selectedCriticNames[1] .. " is the Critic!"
+			elseif #selectedCriticNames == 2 then
+				StatusText.Value = selectedCriticNames[1] .. " AND " .. selectedCriticNames[2] .. " are the Critics!"
+			end
+
+			task.wait(2.5)
+			StatusText.Value = "Game Starting..."
+			task.wait(1)
+
+			local ok, err = pcall(function()
+				teleportPlayers(DesignersTeam:GetPlayers(), designerSpawn.CFrame)
+				teleportPlayers(CriticsTeam:GetPlayers(), criticSpawn.CFrame)
+			end)
+			if not ok then
+				warn("[ROUND] Teleport failed: " .. tostring(err))
+			end
+
+			-- Round loop
+			for i = ROUND_TIME, 0, -1 do
+				local designerCount = #DesignersTeam:GetPlayers()
+				local criticCount = #CriticsTeam:GetPlayers()
+				local allFrozen = ReplicatedStorage:GetAttribute("AllDesignersFrozen")
+
+				if allFrozen then
+					StatusText.Value = "Critics Win! Everyone was eliminated."
+					print("[ROUND END] Critics won by freezing all designers.")
+					rewardWinningTeam("Critics")
+					break
+				end
+
+				if designerCount == 0 then
+					StatusText.Value = "Critics Win! No designers left."
+					rewardWinningTeam("Critics")
+					break
+				elseif criticCount == 0 then
+					StatusText.Value = "Designers Win! Critics left."
+					rewardWinningTeam("Designers")
+					break
+				elseif #Players:GetPlayers() < MIN_PLAYERS then
+					StatusText.Value = "Not enough players!"
+					break
+				end
+
+				if i == 0 then
+					StatusText.Value = "The Collection is a Hit!"
+					rewardWinningTeam("Designers")
+				else
+					-- Show formatted timer in StatusText for any legacy UI
+					StatusText.Value = "Designers: " .. designerCount .. "  |  " .. formatTime(i)
+				end
+
+				TimerValue.Value = i
+				task.wait(1)
+			end
+		end
+	end
+
+	-- Round Over Cleanup
+	task.wait(3)
+	StatusText.Value = "Round Over!"
+	print("[SYSTEM] Round ended. Cleaning up.")
+
+	for _, player in pairs(Players:GetPlayers()) do
+		local toolInChar = player.Character and player.Character:FindFirstChild("FBRoll")
+		if toolInChar then toolInChar:Destroy() end
+		local toolInBackpack = player.Backpack:FindFirstChild("FBRoll")
+		if toolInBackpack then toolInBackpack:Destroy() end
+		player:LoadCharacter()
+	end
+
+	if lobbySpawn then
+		teleportPlayers(Players:GetPlayers(), lobbySpawn.CFrame)
+	else
+		warn("[ROUND] LobbySpawn missing in Workspace!")
+	end
+
+	task.wait(2)
+end
