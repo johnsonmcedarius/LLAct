@@ -1,0 +1,148 @@
+-- // Services
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+-- // Modules
+local ProfileStore = require(ServerScriptService:WaitForChild("ProfileStore"):WaitForChild("ProfileStore"))
+local ReplicaService = require(ServerScriptService:WaitForChild("ReplicaService"):WaitForChild("ReplicaService"))
+
+-- // Constants & Config
+local DATA_VERSION = "v1.2" -- Incremented for Shop/Inventory update
+local PROFILE_STORE_NAME = "Player_Data_" .. DATA_VERSION
+local PLAYER_DATA_CLASS_TOKEN = ReplicaService.NewClassToken("PlayerData")
+
+-- // STARTING DATA (Expanded for Shop)
+local STARTING_DATA = {
+	Coins = 500, -- Give them a little starting cash for that WOVN vibe
+	Level = 1,
+	XP = 0,
+	
+	-- Inventory System
+	OwnedItems = {
+		Skins = {"Default"},
+		Weapons = {"BasicSlay"},
+		Podiums = {"BasicPodium"},
+		Emotes = {"Wave"},
+		Effects = {"White"}
+	},
+	
+	-- Equipped Slots
+	Equipped = {
+		Skin = "Default",
+		Weapon = "BasicSlay",
+		Podium = "BasicPodium",
+		Emote = "Wave",
+		Effect = "White"
+	},
+
+	LoginStreak = 0,
+	LastLogin = 0, 
+	MysteryBoxAvailable = true,
+}
+
+local BASE_XP = 100
+local XP_MULTIPLIER = 1.3
+
+-- // Tables
+local Profiles = {} 
+local Replicas = {} 
+
+local DataManager = {}
+
+-- // Helper Functions
+local function GetRequiredXP(level)
+	return math.floor(BASE_XP * (level ^ XP_MULTIPLIER))
+end
+
+local function CheckLevelUp(player)
+	local profile = Profiles[player]
+	local replica = Replicas[player]
+	if not profile or not replica then return end
+
+	local data = profile.Data
+	local reqXP = GetRequiredXP(data.Level)
+
+	local leveledUp = false
+	while data.XP >= reqXP do
+		data.XP -= reqXP
+		data.Level += 1
+		reqXP = GetRequiredXP(data.Level)
+		leveledUp = true
+	end
+
+	if leveledUp then
+		replica:SetValue({"Level"}, data.Level)
+		replica:SetValue({"XP"}, data.XP)
+		print("💅 " .. player.Name .. " leveled up to " .. data.Level .. "!")
+	end
+end
+
+-- // Public Methods
+function DataManager.GetProfile(player)
+	return Profiles[player]
+end
+
+function DataManager.AddXP(player, amount)
+	local profile = Profiles[player]
+	local replica = Replicas[player]
+	if not profile or not replica then return end
+
+	profile.Data.XP += amount
+	replica:SetValue({"XP"}, profile.Data.XP)
+	CheckLevelUp(player)
+end
+
+function DataManager.AddCoins(player, amount)
+	local profile = Profiles[player]
+	local replica = Replicas[player]
+	if not profile or not replica then return end
+
+	profile.Data.Coins += amount
+	replica:SetValue({"Coins"}, profile.Data.Coins)
+end
+
+-- // Player Handling
+local function PlayerAdded(player)
+	local store = ProfileStore.New(PROFILE_STORE_NAME, STARTING_DATA)
+	local profile = store:StartSessionAsync(tostring(player.UserId))
+
+	if profile then
+		profile:Reconcile() 
+
+		profile.OnSessionEnd:Connect(function()
+			Profiles[player] = nil
+			if Replicas[player] then
+				Replicas[player]:Destroy()
+				Replicas[player] = nil
+			end
+			if player.Parent then player:Kick("Data session ended.") end
+		end)
+
+		if player:IsDescendantOf(Players) then
+			Profiles[player] = profile
+			local replica = ReplicaService.NewReplica({
+				ClassToken = PLAYER_DATA_CLASS_TOKEN,
+				Data = profile.Data,
+				Replication = player, 
+			})
+			Replicas[player] = replica
+			print("Fashion Profile loaded for " .. player.Name)
+		else
+			profile:EndSession()
+		end
+	else
+		player:Kick("Failed to load your fashion profile.")
+	end
+end
+
+Players.PlayerAdded:Connect(PlayerAdded)
+for _, player in ipairs(Players:GetPlayers()) do task.spawn(PlayerAdded, player) end
+
+Players.PlayerRemoving:Connect(function(player)
+	local profile = Profiles[player]
+	if profile then profile:EndSession() end
+end)
+
+_G.DataManager = DataManager
+return DataManager
