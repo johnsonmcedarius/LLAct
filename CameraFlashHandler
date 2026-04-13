@@ -1,0 +1,63 @@
+-- CameraFlashHandler (Script in ServerScriptService)
+-- Validates the flash radius and fires blind + dazed animation to affected critics.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local StunCriticRadius = Remotes:WaitForChild("StunCriticRadius")
+
+local BlindClient = Remotes:FindFirstChild("BlindClient") or Instance.new("RemoteEvent", Remotes)
+BlindClient.Name = "BlindClient"
+
+local PlayDazedAnim = Remotes:FindFirstChild("PlayDazedAnim") or Instance.new("RemoteEvent", Remotes)
+PlayDazedAnim.Name = "PlayDazedAnim"
+
+local DESIGNER_TEAM = "Designers"
+local CRITIC_TEAM = "Critics"
+local MAX_ALLOWED_RADIUS = 25
+
+StunCriticRadius.OnServerEvent:Connect(function(player, flashPos, radius, duration)
+	-- Validate: must be a Designer
+	if not (player.Team and player.Team.Name == DESIGNER_TEAM) then return end
+
+	-- Anti-exploit: player must be near flash origin
+	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+	if (root.Position - flashPos).Magnitude > 10 then
+		warn("[EXPLOIT] " .. player.Name .. " camera flash origin too far from character.")
+		return
+	end
+
+	radius = math.min(radius, MAX_ALLOWED_RADIUS)
+
+	local hitAnyone = false
+
+	for _, critic in ipairs(Players:GetPlayers()) do
+		if critic.Team and critic.Team.Name == CRITIC_TEAM then
+			local criticRoot = critic.Character and critic.Character:FindFirstChild("HumanoidRootPart")
+			if criticRoot and (criticRoot.Position - flashPos).Magnitude <= radius then
+				hitAnyone = true
+
+				-- Send blind + dazed animation to the critic's client
+				BlindClient:FireClient(critic, duration)
+				PlayDazedAnim:FireClient(critic, duration)
+				SoundService.FireToClient(critic, "CameraFlash")
+				SoundService.FireToAll("AbilityHit", criticRoot.Position)
+
+				print("[CAMERA] " .. critic.Name .. " blinded for " .. duration .. "s!")
+			end
+		end
+	end
+
+	if not hitAnyone then
+		SoundService.FireToClient(player, "AbilityMiss")
+	end
+
+	-- Showstopper charge for designer if hit landed
+	if hitAnyone and _G.ShowstopperService then
+		_G.ShowstopperService.OnAbilityHit(player)
+	end
+end)
