@@ -1,0 +1,117 @@
+-- RelevanceSystem (Script in ServerScriptService)
+-- Tracks the 3-strike "Relevance" system for Designers.
+-- Strike 1 & 2: glass-crack sound, lose a strike icon on HUD.
+-- Strike 3: instant perma-cancel, dramatic sound, crowd boo.
+-- Exposes _G.RelevanceSystem.AddStrike(player) for TagManager to call.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Teams = game:GetService("Teams")
+
+local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+-- Remote to sync strikes to each player's HUD
+local UpdateStrikes = Remotes:FindFirstChild("UpdateStrikes") or Instance.new("RemoteEvent", Remotes)
+UpdateStrikes.Name = "UpdateStrikes"
+
+-- Remote to tell everyone a player was eliminated
+local PlayerEliminated = Remotes:FindFirstChild("PlayerEliminated") or Instance.new("RemoteEvent", Remotes)
+PlayerEliminated.Name = "PlayerEliminated"
+
+local MAX_STRIKES = 3
+local DESIGNER_TEAM = "Designers"
+
+-- State: [userId] = strike count
+local strikeData = {}
+
+-------------------------------------------------
+-- Helpers
+-------------------------------------------------
+
+local function getStrikes(player)
+	return strikeData[player.UserId] or 0
+end
+
+local function resetStrikes(player)
+	strikeData[player.UserId] = 0
+	UpdateStrikes:FireClient(player, 0, MAX_STRIKES)
+end
+
+local function eliminatePlayer(player)
+	print("[RELEVANCE] " .. player.Name .. " has been permanently CANCELLED.")
+
+	-- Fire elimination sound to all clients at player position
+	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if root then
+		SoundService.FireToAll("Strike3Eliminated", root.Position)
+		SoundService.FireToAll("CrowdBoo", root.Position)
+	end
+
+	-- Notify all clients (for elimination banner)
+	PlayerEliminated:FireAllClients(player.Name)
+
+	-- Strip any fabric
+	local toolInChar = player.Character and player.Character:FindFirstChild("FBRoll")
+	local toolInBackpack = player.Backpack:FindFirstChild("FBRoll")
+	if toolInChar then toolInChar:Destroy() end
+	if toolInBackpack then toolInBackpack:Destroy() end
+
+	-- Move to lobby (permanent cancel - no podium)
+	task.wait(0.5)
+	player.Team = Teams:WaitForChild("Lobby")
+	player:LoadCharacter()
+end
+
+local function addStrike(player)
+	if not (player.Team and player.Team.Name == DESIGNER_TEAM) then return end
+
+	local strikes = getStrikes(player) + 1
+	strikeData[player.UserId] = strikes
+
+	print("[RELEVANCE] " .. player.Name .. " has " .. strikes .. "/" .. MAX_STRIKES .. " strikes.")
+
+	-- Sync to HUD
+	UpdateStrikes:FireClient(player, strikes, MAX_STRIKES)
+
+	-- Sound per strike
+	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+
+	if strikes == 1 then
+		if root then SoundService.FireToClient(player, "Strike1", root.Position) end
+	elseif strikes == 2 then
+		if root then SoundService.FireToClient(player, "Strike2", root.Position) end
+	elseif strikes >= MAX_STRIKES then
+		eliminatePlayer(player)
+	end
+end
+
+-------------------------------------------------
+-- Global API
+-------------------------------------------------
+_G.RelevanceSystem = {
+	AddStrike = addStrike,
+	GetStrikes = getStrikes,
+	ResetStrikes = resetStrikes,
+}
+
+-------------------------------------------------
+-- Round reset
+-------------------------------------------------
+local StatusValues = ReplicatedStorage:WaitForChild("StatusValues")
+local StatusText = StatusValues:WaitForChild("StatusText")
+
+StatusText:GetPropertyChangedSignal("Value"):Connect(function()
+	local val = StatusText.Value
+	if val == "Intermission" or val == "Round Over!" or val == "Selecting Map..." then
+		for _, p in ipairs(Players:GetPlayers()) do
+			resetStrikes(p)
+		end
+		strikeData = {}
+	end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	strikeData[player.UserId] = nil
+end)
