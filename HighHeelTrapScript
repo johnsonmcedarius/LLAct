@@ -1,0 +1,60 @@
+-- HighHeelTrapScript (LocalScript inside HighHeel Tool)
+-- Designer ability. On Activated: slams a trap on the floor directly in front.
+-- Any Critic who walks into it gets stunned for 3 seconds.
+-- Reusable with cooldown. No tool:Destroy().
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Debris = game:GetService("Debris")
+
+local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
+
+local STUN_DURATION = 3
+local TRAP_LIFETIME = 10
+local COOLDOWN = 10
+local CRITIC_TEAM = "Critics"
+
+local tool = script.Parent
+local handle = tool:WaitForChild("Handle")
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local AbilityCooldownUpdate = Remotes:WaitForChild("AbilityCooldownUpdate")
+
+local debounce = false
+local cooldownUntil = 0
+
+tool.Activated:Connect(function()
+	local now = os.clock()
+	if debounce or now < cooldownUntil then return end
+
+	local char = tool.Parent
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	debounce = true
+	cooldownUntil = now + COOLDOWN
+
+	-- Notify HUD of cooldown
+	AbilityCooldownUpdate:FireServer("HighHeel", COOLDOWN)
+
+	print("[HEELTRAP] Slamming trap on floor.")
+
+	-- Raycast down to find the floor
+	local rayParams = RaycastParams.new()
+	rayParams.FilterDescendantsInstances = {char}
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+	local spawnPos = root.Position + root.CFrame.LookVector * 4
+	local ray = workspace:Raycast(spawnPos + Vector3.new(0, 3, 0), Vector3.new(0, -10, 0), rayParams)
+	local floorY = ray and ray.Position.Y or (root.Position.Y - 3)
+
+	-- Place trap on floor
+	local PlaceTrapRemote = Remotes:FindFirstChild("PlaceHeelTrap") or Instance.new("RemoteEvent", Remotes)
+	PlaceTrapRemote.Name = "PlaceHeelTrap"
+	PlaceTrapRemote:FireServer(Vector3.new(spawnPos.X, floorY + 0.25, spawnPos.Z))
+
+	SoundService.PlayLocal("HeelThud")
+
+	task.wait(COOLDOWN)
+	debounce = false
+end)
