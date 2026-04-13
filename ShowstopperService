@@ -1,32 +1,93 @@
--- ============================================================
 -- ShowstopperService (Script in ServerScriptService)
--- Listens for activation requests, validates charge, calls Execute
--- ============================================================
+-- Central charge system. All other scripts call _G.ShowstopperService.AddCharge(player, amount).
+-- Charge sources and amounts:
+--   Designer: Dunk=25, Pass=10 (both sides), Rescue=15, AbilityHit=5, CloseDodge=3
+--   Critic:   Freeze=20, FinalCancel=40, InterceptPass=15, DunkDenied=20
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
+
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
 local ActivateShowstopper = Remotes:FindFirstChild("ActivateShowstopper") or Instance.new("RemoteEvent", Remotes)
 ActivateShowstopper.Name = "ActivateShowstopper"
 
 local UpdateShowstopperCharge = Remotes:FindFirstChild("UpdateShowstopperCharge") or Instance.new("RemoteEvent", Remotes)
 UpdateShowstopperCharge.Name = "UpdateShowstopperCharge"
 
+local ShowstopperFullAlert = Remotes:FindFirstChild("ShowstopperFullAlert") or Instance.new("RemoteEvent", Remotes)
+ShowstopperFullAlert.Name = "ShowstopperFullAlert"
+
 local ShowstoppersFolder = ReplicatedStorage:WaitForChild("Showstoppers")
 
 -- Config
 local MAX_CHARGE = 100
-local CHARGE_PER_DEPOSIT = 20   -- Designers earn charge by depositing fabric
-local CHARGE_PER_FREEZE = 25    -- Critics earn charge by freezing
+
+-- Charge amounts by event
+local ChargeAmounts = {
+	-- Designer events
+	FabricDunk      = 25,
+	FabricPass      = 10,  -- both passer and receiver get this
+	TeamRescue      = 15,
+	AbilityHit      = 5,
+	CloseDodge      = 3,
+
+	-- Critic events
+	FreezeDesigner  = 20,
+	FinalCancel     = 40,  -- 3rd strike kill
+	InterceptPass   = 15,
+	DunkDenied      = 20,
+}
 
 -- State
-local playerCharge = {}   -- [userId] = number
-local cooldowns = {}      -- [userId] = os.clock() expiry
-
--- Module cache
+local playerCharge = {}
+local cooldowns = {}
 local moduleCache = {}
+local chargeWasFull = {} -- track who already got "full" alert this fill
 
+-------------------------------------------------
+-- Internal helpers
+-------------------------------------------------
+
+local function getCharge(player)
+	return playerCharge[player.UserId] or 0
+end
+
+local function syncCharge(player)
+	local charge = getCharge(player)
+	UpdateShowstopperCharge:FireClient(player, charge, MAX_CHARGE)
+end
+
+local function addCharge(player, amount)
+	if not player or not player.Parent then return end
+
+	local prev = getCharge(player)
+	local new = math.clamp(prev + amount, 0, MAX_CHARGE)
+	playerCharge[player.UserId] = new
+	syncCharge(player)
+
+	-- Fire "showstopper ready" alert only once per fill
+	if new >= MAX_CHARGE and not chargeWasFull[player.UserId] then
+		chargeWasFull[player.UserId] = true
+		ShowstopperFullAlert:FireClient(player)
+		SoundService.FireToClient(player, "ShowstopperReady")
+		print("[SHOWSTOPPER] " .. player.Name .. " charge is FULL!")
+	end
+
+	print("[SHOWSTOPPER] " .. player.Name .. " +" .. amount .. " charge -> " .. new)
+end
+
+local function resetCharge(player)
+	playerCharge[player.UserId] = 0
+	chargeWasFull[player.UserId] = nil
+	syncCharge(player)
+end
+
+-------------------------------------------------
+-- Module loader
+-------------------------------------------------
 local function getModule(teamName, moduleName)
 	local key = teamName .. "_" .. moduleName
 	if moduleCache[key] then return moduleCache[key] end
@@ -34,97 +95,111 @@ local function getModule(teamName, moduleName)
 	local folder = ShowstoppersFolder:FindFirstChild(teamName)
 	if not folder then return nil end
 
-	local moduleScript = folder:FindFirstChild(moduleName)
-	if not moduleScript then return nil end
+	local ms = folder:FindFirstChild(moduleName)
+	if not ms then return nil end
 
-	local ok, result = pcall(require, moduleScript)
+	local ok, result = pcall(require, ms)
 	if ok then
 		moduleCache[key] = result
 		return result
 	else
-		warn("[SHOWSTOPPER] Failed to load module " .. moduleName .. ": " .. tostring(result))
+		warn("[SHOWSTOPPER] Failed to load " .. moduleName .. ": " .. tostring(result))
 		return nil
 	end
 end
 
-local function getCharge(player)
-	return playerCharge[player.UserId] or 0
-end
-
-local function addCharge(player, amount)
-	local current = getCharge(player)
-	playerCharge[player.UserId] = math.clamp(current + amount, 0, MAX_CHARGE)
-	UpdateShowstopperCharge:FireClient(player, playerCharge[player.UserId], MAX_CHARGE)
-	print("[SHOWSTOPPER] " .. player.Name .. " charge: " .. playerCharge[player.UserId])
-end
-
-local function resetCharge(player)
-	playerCharge[player.UserId] = 0
-	UpdateShowstopperCharge:FireClient(player, 0, MAX_CHARGE)
-end
-
--- Expose charge functions globally so other scripts can call them
+-------------------------------------------------
+-- Global API (called by FabricManager, TagManager, etc.)
+-------------------------------------------------
 _G.ShowstopperService = {
-	AddChargeForDeposit = function(player)
-		addCharge(player, CHARGE_PER_DEPOSIT)
+	AddCharge = addCharge,
+
+	-- Named event helpers so callers stay readable
+	OnFabricDunk = function(player)
+		addCharge(player, ChargeAmounts.FabricDunk)
 	end,
-	AddChargeForFreeze = function(player)
-		addCharge(player, CHARGE_PER_FREEZE)
+	OnFabricPass = function(passer, receiver)
+		addCharge(passer, ChargeAmounts.FabricPass)
+		addCharge(receiver, ChargeAmounts.FabricPass)
 	end,
+	OnTeamRescue = function(rescuer)
+		addCharge(rescuer, ChargeAmounts.TeamRescue)
+	end,
+	OnAbilityHit = function(player)
+		addCharge(player, ChargeAmounts.AbilityHit)
+	end,
+	OnCloseDodge = function(player)
+		addCharge(player, ChargeAmounts.CloseDodge)
+	end,
+	OnFreezeDesigner = function(critic)
+		addCharge(critic, ChargeAmounts.FreezeDesigner)
+	end,
+	OnFinalCancel = function(critic)
+		addCharge(critic, ChargeAmounts.FinalCancel)
+	end,
+	OnInterceptPass = function(critic)
+		addCharge(critic, ChargeAmounts.InterceptPass)
+	end,
+	OnDunkDenied = function(critic)
+		addCharge(critic, ChargeAmounts.DunkDenied)
+	end,
+	GetCharge = getCharge,
+	ResetCharge = resetCharge,
 }
 
+-------------------------------------------------
 -- Activation handler
+-------------------------------------------------
 ActivateShowstopper.OnServerEvent:Connect(function(player, moduleName)
 	local charge = getCharge(player)
 	if charge < MAX_CHARGE then
-		print("[SHOWSTOPPER] " .. player.Name .. " tried to activate with insufficient charge: " .. charge)
+		print("[SHOWSTOPPER] " .. player.Name .. " tried to activate with " .. charge .. "/" .. MAX_CHARGE)
 		return
 	end
 
 	local now = os.clock()
-	local cooldownExpiry = cooldowns[player.UserId] or 0
-	if now < cooldownExpiry then
+	if now < (cooldowns[player.UserId] or 0) then
 		print("[SHOWSTOPPER] " .. player.Name .. " is on cooldown.")
 		return
 	end
 
-	if not (player.Team) then return end
+	if not player.Team then return end
 	local teamName = player.Team.Name
 
-	-- Determine which module to use based on team
 	local targetModule = moduleName
 	if not targetModule then
-		-- Default: first showstopper for their team
 		local folder = ShowstoppersFolder:FindFirstChild(teamName)
-		if folder and #folder:GetChildren() > 0 then
-			targetModule = folder:GetChildren()[1].Name
+		if folder then
+			local children = folder:GetChildren()
+			if #children > 0 then
+				targetModule = children[1].Name
+			end
 		end
 	end
 
 	if not targetModule then
-		warn("[SHOWSTOPPER] No module found for team: " .. teamName)
+		warn("[SHOWSTOPPER] No module for team: " .. teamName)
 		return
 	end
 
 	local mod = getModule(teamName, targetModule)
-	if not mod then
-		warn("[SHOWSTOPPER] Module not loaded: " .. tostring(targetModule))
-		return
-	end
+	if not mod then return end
 
-	-- Execute and reset
-	print("[SHOWSTOPPER] Executing " .. targetModule .. " for " .. player.Name)
+	print("[SHOWSTOPPER] " .. player.Name .. " fires " .. targetModule)
 	local ok, err = pcall(mod.Execute, player)
 	if not ok then
 		warn("[SHOWSTOPPER] Execute error: " .. tostring(err))
 		return
 	end
 
+	SoundService.FireToClient(player, "ShowstopperActivate")
 	resetCharge(player)
 	cooldowns[player.UserId] = now + (mod.Config.Cooldown or 60)
 end)
 
--- Reset on round end
+-------------------------------------------------
+-- Round reset
+-------------------------------------------------
 local StatusValues = ReplicatedStorage:WaitForChild("StatusValues")
 local StatusText = StatusValues:WaitForChild("StatusText")
 
@@ -141,4 +216,5 @@ end)
 Players.PlayerRemoving:Connect(function(player)
 	playerCharge[player.UserId] = nil
 	cooldowns[player.UserId] = nil
+	chargeWasFull[player.UserId] = nil
 end)
