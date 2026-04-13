@@ -1,0 +1,227 @@
+-- MovementSystem (LocalScript in StarterCharacterScripts)
+-- Infinite sprint. Fashion Dash on Q (PC), DashButton (Mobile), ButtonR1 (Xbox).
+-- No stamina drain. Dash has its own cooldown.
+
+-- Services
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local ContextActionService = game:GetService("ContextActionService")
+
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+-- Speed Settings
+local WALK_SPEED = 16
+local SPRINT_SPEED = 24
+
+-- Dash Settings
+local DASH_SPEED = 80
+local DASH_DURATION = 0.18
+local DASH_COOLDOWN = 4.0
+
+-- FOV
+local NORMAL_FOV = 70
+local SPRINT_FOV = 80
+local DASH_FOV = 95
+local FOV_TWEEN_TIME = 0.25
+
+-- Head Bob
+local BOB_SPEED = 14
+local BOB_AMOUNT = 0.15
+local bobTime = 0
+
+-- Sprint Animation
+local SPRINT_ANIMATION_ID = "rbxassetid://130150958024919"
+
+-- State
+local sprinting = false
+local dashing = false
+local dashCooldownUntil = 0
+local character, humanoid, root
+local sprintTrack
+local fovTween
+local dustEmitter
+
+-------------------------------------------------
+-- Character Setup
+-------------------------------------------------
+local function setupCharacter(char)
+	character = char
+	humanoid = char:WaitForChild("Humanoid")
+	root = char:WaitForChild("HumanoidRootPart")
+
+	humanoid.WalkSpeed = WALK_SPEED
+	camera.FieldOfView = NORMAL_FOV
+
+	local animator = humanoid:FindFirstChildOfClass("Animator")
+	if not animator then
+		animator = Instance.new("Animator")
+		animator.Parent = humanoid
+	end
+
+	local anim = Instance.new("Animation")
+	anim.AnimationId = SPRINT_ANIMATION_ID
+	sprintTrack = animator:LoadAnimation(anim)
+	sprintTrack.Priority = Enum.AnimationPriority.Action
+
+	-- Dust attachment
+	local attachment = Instance.new("Attachment")
+	attachment.Position = Vector3.new(0, -2.8, 0)
+	attachment.Parent = root
+
+	dustEmitter = Instance.new("ParticleEmitter")
+	dustEmitter.Enabled = false
+	dustEmitter.Texture = "rbxasset://textures/particles/smoke_main.dds"
+	dustEmitter.Rate = 35
+	dustEmitter.Lifetime = NumberRange.new(0.6, 1.2)
+	dustEmitter.Speed = NumberRange.new(2, 4)
+	dustEmitter.SpreadAngle = Vector2.new(180, 180)
+	dustEmitter.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.8),
+		NumberSequenceKeypoint.new(1, 1.6)
+	})
+	dustEmitter.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.3),
+		NumberSequenceKeypoint.new(1, 1)
+	})
+	dustEmitter.Color = ColorSequence.new(Color3.fromRGB(200, 150, 255))
+	dustEmitter.Parent = attachment
+end
+
+player.CharacterAdded:Connect(setupCharacter)
+if player.Character then setupCharacter(player.Character) end
+
+-------------------------------------------------
+-- FOV Helper
+-------------------------------------------------
+local function tweenFov(target)
+	if fovTween then fovTween:Cancel() end
+	fovTween = TweenService:Create(
+		camera,
+		TweenInfo.new(FOV_TWEEN_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ FieldOfView = target }
+	)
+	fovTween:Play()
+end
+
+-------------------------------------------------
+-- Fashion Dash
+-------------------------------------------------
+local function performDash()
+	if not humanoid or not root then return end
+	if dashing then return end
+
+	local now = os.clock()
+	if now < dashCooldownUntil then
+		print("[DASH] On cooldown. " .. string.format("%.1f", dashCooldownUntil - now) .. "s remaining.")
+		return
+	end
+
+	dashing = true
+	dashCooldownUntil = now + DASH_COOLDOWN
+
+	print("[DASH] Fashion Dash activated!")
+
+	local direction = humanoid.MoveDirection
+	if direction.Magnitude < 0.1 then
+		direction = root.CFrame.LookVector
+	end
+
+	tweenFov(DASH_FOV)
+
+	-- Burst of speed
+	humanoid.WalkSpeed = DASH_SPEED
+
+	-- Dash dust burst
+	if dustEmitter then
+		dustEmitter.Rate = 120
+		dustEmitter.Enabled = true
+	end
+
+	task.wait(DASH_DURATION)
+
+	-- Restore to sprint speed if still sprinting
+	if humanoid then
+		humanoid.WalkSpeed = sprinting and SPRINT_SPEED or WALK_SPEED
+	end
+	if dustEmitter then
+		dustEmitter.Rate = 35
+		dustEmitter.Enabled = sprinting
+	end
+
+	tweenFov(sprinting and SPRINT_FOV or NORMAL_FOV)
+	dashing = false
+end
+
+-------------------------------------------------
+-- Input Bindings
+-------------------------------------------------
+
+-- PC: Q key
+UIS.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if input.KeyCode == Enum.KeyCode.Q then
+		performDash()
+	end
+	if input.KeyCode == Enum.KeyCode.LeftShift then
+		sprinting = true
+	end
+end)
+
+UIS.InputEnded:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.LeftShift then
+		sprinting = false
+	end
+end)
+
+-- Xbox: R1 (ButtonR1)
+-- Mobile: TouchButton via ContextActionService
+local DASH_ACTION = "FashionDash"
+
+ContextActionService:BindAction(
+	DASH_ACTION,
+	function(_, inputState)
+		if inputState == Enum.UserInputState.Begin then
+			performDash()
+		end
+	end,
+	true, -- create mobile button
+	Enum.KeyCode.ButtonR1 -- Xbox R1
+)
+
+-- Style the mobile button (you can move this in the UI later)
+local button = ContextActionService:GetButton(DASH_ACTION)
+if button then
+	button.Text = "DASH"
+	button.BackgroundColor3 = Color3.fromRGB(180, 80, 255)
+end
+
+-------------------------------------------------
+-- Main Loop
+-------------------------------------------------
+RunService.RenderStepped:Connect(function(dt)
+	if not humanoid or not root then return end
+	if dashing then return end
+
+	local isMoving = humanoid.MoveDirection.Magnitude > 0
+
+	if sprinting and isMoving then
+		humanoid.WalkSpeed = SPRINT_SPEED
+		tweenFov(SPRINT_FOV)
+
+		bobTime += dt * BOB_SPEED
+		camera.CFrame *= CFrame.new(0, math.sin(bobTime) * BOB_AMOUNT, 0)
+
+		if sprintTrack and not sprintTrack.IsPlaying then sprintTrack:Play() end
+		if dustEmitter then dustEmitter.Enabled = true end
+	else
+		humanoid.WalkSpeed = WALK_SPEED
+		tweenFov(NORMAL_FOV)
+		bobTime = 0
+
+		if sprintTrack and sprintTrack.IsPlaying then sprintTrack:Stop() end
+		if dustEmitter then dustEmitter.Enabled = false end
+	end
+end)
