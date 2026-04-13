@@ -1,0 +1,132 @@
+-- TrendTrackerController (LocalScript in StarterPlayerScripts)
+-- When the critic receives TrendTrackerActivate, for 20 seconds they can see
+-- pink SelectionBox outlines on designers currently holding fabric rolls.
+-- The outlines show through walls (AlwaysOnTop).
+
+-- Services
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+
+-- Remotes
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local TrendTrackerActivate = Remotes:WaitForChild("TrendTrackerActivate")
+
+-- State
+local trendTrackerActive = false
+local trendTrackerExpiry = 0
+local auraObjects = {} -- [userId] = SelectionBox
+
+-------------------------------------------------
+-- Aura Helpers
+-------------------------------------------------
+local function applyAura(targetPlayer)
+	if auraObjects[targetPlayer.UserId] then return end
+	local char = targetPlayer.Character
+	if not char then return end
+
+	local box = Instance.new("SelectionBox")
+	box.Adornee = char
+	box.Color3 = Color3.fromRGB(255, 80, 200) -- Hot pink
+	box.LineThickness = 0.1
+	box.SurfaceTransparency = 0.8
+	box.SurfaceColor3 = Color3.fromRGB(255, 80, 200)
+	-- Note: SelectionBox doesn't have AlwaysOnTop natively.
+	-- For true wall-penetrating vision you'd use a Highlight with DepthMode set to AlwaysOnTop.
+	-- Replacing with Highlight for wall-penetrating effect:
+	box:Destroy()
+
+	local highlight = Instance.new("Highlight")
+	highlight.Adornee = char
+	highlight.OutlineColor = Color3.fromRGB(255, 80, 200)
+	highlight.FillColor = Color3.fromRGB(255, 80, 200)
+	highlight.FillTransparency = 0.85
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop -- Sees through walls
+	highlight.Parent = char
+
+	auraObjects[targetPlayer.UserId] = highlight
+end
+
+local function removeAura(targetPlayer)
+	local h = auraObjects[targetPlayer.UserId]
+	if h then
+		h:Destroy()
+		auraObjects[targetPlayer.UserId] = nil
+	end
+end
+
+local function clearAllAuras()
+	for userId, h in pairs(auraObjects) do
+		h:Destroy()
+		auraObjects[userId] = nil
+	end
+end
+
+-------------------------------------------------
+-- Fabric holder detection (client-side check)
+-------------------------------------------------
+local function playerHoldsFabric(p)
+	return (p.Character and p.Character:FindFirstChild("FBRoll")) ~= nil
+		or p.Backpack:FindFirstChild("FBRoll") ~= nil
+end
+
+-------------------------------------------------
+-- Activation
+-------------------------------------------------
+TrendTrackerActivate.OnClientEvent:Connect(function(duration)
+	-- Only Critics receive this event (server filters by team before firing)
+	print("[TREND TRACKER] Activated for " .. duration .. " seconds!")
+	trendTrackerActive = true
+	trendTrackerExpiry = os.clock() + duration
+end)
+
+-------------------------------------------------
+-- Main loop: update auras every frame while active
+-------------------------------------------------
+RunService.Heartbeat:Connect(function()
+	if not trendTrackerActive then return end
+
+	local now = os.clock()
+	if now >= trendTrackerExpiry then
+		trendTrackerActive = false
+		clearAllAuras()
+		print("[TREND TRACKER] Expired.")
+		return
+	end
+
+	-- Only run for Critics
+	if not (player.Team and player.Team.Name == "Critics") then
+		clearAllAuras()
+		return
+	end
+
+	-- Build set of who currently holds fabric
+	local holdingSet = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Team and p.Team.Name == "Designers" and playerHoldsFabric(p) then
+			holdingSet[p.UserId] = p
+		end
+	end
+
+	-- Apply auras to holders
+	for userId, p in pairs(holdingSet) do
+		applyAura(p)
+	end
+
+	-- Remove auras from anyone who dropped fabric
+	for userId, _ in pairs(auraObjects) do
+		if not holdingSet[userId] then
+			local p = Players:GetPlayerByUserId(userId)
+			if p then removeAura(p) end
+		end
+	end
+end)
+
+-- Cleanup on character reset
+player.CharacterAdded:Connect(function()
+	clearAllAuras()
+	trendTrackerActive = false
+end)
