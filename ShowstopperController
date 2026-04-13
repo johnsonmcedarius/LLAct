@@ -1,0 +1,53 @@
+-- ============================================================
+-- ShowstopperController (LocalScript in StarterPlayerScripts)
+-- Handles input to trigger showstopper and syncs charge UI
+-- ============================================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UIS = game:GetService("UserInputService")
+local ContextActionService = game:GetService("ContextActionService")
+
+local player = Players.LocalPlayer
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local ActivateShowstopper = Remotes:WaitForChild("ActivateShowstopper")
+local UpdateShowstopperCharge = Remotes:WaitForChild("UpdateShowstopperCharge")
+
+local currentCharge = 0
+local maxCharge = 100
+
+-- Keybind: F to activate showstopper
+local SHOWSTOPPER_ACTION = "ActivateShowstopper"
+
+ContextActionService:BindAction(
+	SHOWSTOPPER_ACTION,
+	function(_, inputState)
+		if inputState == Enum.UserInputState.Begin then
+			if currentCharge >= maxCharge then
+				print("[SHOWSTOPPER] Activating!")
+				ActivateShowstopper:FireServer(nil) -- nil = use default for team
+			else
+				print("[SHOWSTOPPER] Not enough charge: " .. currentCharge .. "/" .. maxCharge)
+			end
+		end
+	end,
+	true,
+	Enum.KeyCode.F,
+	Enum.KeyCode.ButtonY -- Xbox Y button
+)
+
+-- Style the mobile button
+local btn = ContextActionService:GetButton(SHOWSTOPPER_ACTION)
+if btn then
+	btn.Text = "SHOW"
+	btn.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+end
+
+-- Sync charge value for UI
+UpdateShowstopperCharge.OnClientEvent:Connect(function(charge, max)
+	currentCharge = charge
+	maxCharge = max
+	-- TODO: Update your Showstopper charge bar UI here
+	print("[SHOWSTOPPER] Charge updated: " .. charge .. "/" .. max)
+end)
+--]]
