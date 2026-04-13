@@ -1,0 +1,128 @@
+-- VFXModule (ModuleScript in ReplicatedStorage)
+-- Clone-based VFX system. All effects live as pre-made assets in:
+-- ReplicatedStorage > Assets > VFX
+-- Usage: local VFX = require(ReplicatedStorage.VFXModule)
+--        VFX.Play("PoofEffect", position, optional_parent)
+
+local Debris = game:GetService("Debris")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local VFX = {}
+
+-- Pool storage (optional, used if USE_POOLING = true)
+local USE_POOLING = false
+local pool = {} -- [effectName] = {available instances}
+
+-------------------------------------------------
+-- Internal: get the VFX folder
+-------------------------------------------------
+local function getVFXFolder()
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	if not assets then
+		warn("[VFX] ReplicatedStorage.Assets folder missing!")
+		return nil
+	end
+	local vfxFolder = assets:FindFirstChild("VFX")
+	if not vfxFolder then
+		warn("[VFX] ReplicatedStorage.Assets.VFX folder missing!")
+		return nil
+	end
+	return vfxFolder
+end
+
+-------------------------------------------------
+-- Play: clone and position an effect
+-- effectName: the name of the asset inside Assets/VFX
+-- position: Vector3
+-- parent: optional (defaults to workspace)
+-- lifetime: optional override for how long before Debris cleans it up
+-------------------------------------------------
+function VFX.Play(effectName, position, parent, lifetime)
+	local vfxFolder = getVFXFolder()
+	if not vfxFolder then return end
+
+	local template = vfxFolder:FindFirstChild(effectName)
+	if not template then
+		warn("[VFX] Effect not found: " .. tostring(effectName))
+		return
+	end
+
+	local clone = template:Clone()
+
+	-- Position the effect
+	if clone:IsA("BasePart") then
+		clone.CFrame = CFrame.new(position)
+	elseif clone:IsA("Model") then
+		if clone.PrimaryPart then
+			clone:PivotTo(CFrame.new(position))
+		else
+			clone:SetPrimaryPartCFrame(CFrame.new(position))
+		end
+	elseif clone:IsA("ParticleEmitter") then
+		-- If it's a standalone emitter, wrap it
+		local host = Instance.new("Part")
+		host.Size = Vector3.new(0.1, 0.1, 0.1)
+		host.CFrame = CFrame.new(position)
+		host.Anchored = true
+		host.CanCollide = false
+		host.Transparency = 1
+		clone.Parent = host
+		clone = host
+	end
+
+	clone.Parent = parent or workspace
+
+	-- Enable any particle emitters in descendants
+	for _, child in ipairs(clone:GetDescendants()) do
+		if child:IsA("ParticleEmitter") or child:IsA("Trail") then
+			child.Enabled = true
+		end
+	end
+
+	-- Cleanup via Debris service (never yields the calling script)
+	local cleanupTime = lifetime or 3
+	Debris:AddItem(clone, cleanupTime)
+
+	return clone
+end
+
+-------------------------------------------------
+-- PlayAt: attach effect to a part (follows it)
+-------------------------------------------------
+function VFX.PlayAt(effectName, part, offset, lifetime)
+	local vfxFolder = getVFXFolder()
+	if not vfxFolder then return end
+
+	local template = vfxFolder:FindFirstChild(effectName)
+	if not template then
+		warn("[VFX] Effect not found: " .. tostring(effectName))
+		return
+	end
+
+	local clone = template:Clone()
+	clone.Parent = part
+
+	if clone:IsA("BasePart") then
+		clone.CFrame = part.CFrame * CFrame.new(offset or Vector3.zero)
+	end
+
+	local cleanupTime = lifetime or 3
+	Debris:AddItem(clone, cleanupTime)
+
+	return clone
+end
+
+-------------------------------------------------
+-- Stop: disable particle emitters on a running effect
+-- (call this if you want to let particles fade out naturally)
+-------------------------------------------------
+function VFX.Stop(effectInstance)
+	if not effectInstance or not effectInstance.Parent then return end
+	for _, child in ipairs(effectInstance:GetDescendants()) do
+		if child:IsA("ParticleEmitter") then
+			child.Enabled = false
+		end
+	end
+end
+
+return VFX
