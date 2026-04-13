@@ -1,0 +1,58 @@
+-- CameraScript (LocalScript inside Camera Tool)
+-- DESIGNER ability. Blinds ALL Critics within a stud radius.
+-- Affected critics play a dazed animation for 4 seconds.
+-- Reusable with cooldown. No tool:Destroy().
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
+
+local BLIND_DURATION = 4
+local BLIND_RADIUS = 18
+local COOLDOWN = 6
+local DESIGNER_TEAM = "Designers"
+local CRITIC_TEAM = "Critics"
+
+local tool = script.Parent
+local handle = tool:WaitForChild("Handle")
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+local StunCriticRadius = Remotes:FindFirstChild("StunCriticRadius") or Instance.new("RemoteEvent", Remotes)
+StunCriticRadius.Name = "StunCriticRadius"
+
+local AbilityCooldownUpdate = Remotes:WaitForChild("AbilityCooldownUpdate")
+
+local debounce = false
+local cooldownUntil = 0
+
+tool.Activated:Connect(function()
+	local now = os.clock()
+	if debounce or now < cooldownUntil then return end
+
+	local char = tool.Parent
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	debounce = true
+	cooldownUntil = now + COOLDOWN
+
+	-- Notify HUD of cooldown
+	AbilityCooldownUpdate:FireServer("Camera", COOLDOWN)
+
+	-- Flash light VFX (local)
+	local flash = Instance.new("PointLight")
+	flash.Brightness = 12
+	flash.Range = 28
+	flash.Color = Color3.new(1, 1, 1)
+	flash.Parent = handle
+	task.delay(0.1, function() flash:Destroy() end)
+
+	SoundService.PlayLocal("CameraFlash")
+
+	-- Tell server to check radius and blind critics
+	StunCriticRadius:FireServer(root.Position, BLIND_RADIUS, BLIND_DURATION)
+
+	task.wait(COOLDOWN)
+	debounce = false
+end)
