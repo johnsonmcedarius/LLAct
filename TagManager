@@ -1,0 +1,250 @@
+-- TagManager (Script in ServerScriptService)
+-- HoldDuration for unfreeze is 0 (instant rescue)
+
+-- Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local Teams = game:GetService("Teams")
+local RunService = game:GetService("RunService")
+
+-- Folders
+local Assets = ReplicatedStorage:WaitForChild("Assets")
+local Podiums = Assets:WaitForChild("Podiums")
+
+-- Status Values
+local StatusValues = ReplicatedStorage:WaitForChild("StatusValues")
+local StatusText = StatusValues:WaitForChild("StatusText")
+
+-- Config
+local CANCELLATION_TIME = 60
+local ANTI_CAMP_DISTANCE = 15
+
+-- Trackers
+local frozenPlayers = {}
+
+-- Effect Library
+local Effects = {
+	["White"] = {Color = Color3.new(1, 1, 1), Material = Enum.Material.SmoothPlastic},
+	["Lava"] = {Color = Color3.fromRGB(255, 85, 0), Material = Enum.Material.Neon},
+	["Gold"] = {Color = Color3.fromRGB(255, 215, 0), Material = Enum.Material.Metal},
+	["Ice"] = {Color = Color3.fromRGB(150, 235, 255), Material = Enum.Material.Ice},
+}
+
+-------------------------------------------------
+-- Helpers
+-------------------------------------------------
+local function rewardCritic(criticPlayer)
+	if _G.DataManager then
+		_G.DataManager.AddXP(criticPlayer, 15)
+		_G.DataManager.AddCoins(criticPlayer, 5)
+		print("[TAG] Reward issued to critic: " .. criticPlayer.Name)
+	else
+		print("[TAG] DataManager not found. No reward issued.")
+	end
+end
+
+local function cancelPlayer(player)
+	print("[TAG] " .. player.Name .. " has been cancelled (timer ran out).")
+	player.Team = Teams:WaitForChild("Lobby")
+	player:LoadCharacter()
+end
+
+local function restoreVisuals(targetPlayer, data)
+	if not data.OriginalVisuals then return end
+	for part, props in pairs(data.OriginalVisuals) do
+		if part and part.Parent then
+			part.Color = props.Color
+			part.Material = props.Material
+		end
+	end
+end
+
+local function unfreezePlayer(targetPlayer)
+	local data = frozenPlayers[targetPlayer.UserId]
+	if not data then return end
+
+	print("[TAG] Unfreezing: " .. targetPlayer.Name)
+
+	restoreVisuals(targetPlayer, data)
+
+	if data.Podium then data.Podium:Destroy() end
+	if data.PoseAnim then data.PoseAnim:Stop() end
+
+	local root = targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+	if root then
+		root.Anchored = false
+		print("[TAG] " .. targetPlayer.Name .. " unanchored.")
+	end
+
+	frozenPlayers[targetPlayer.UserId] = nil
+	ReplicatedStorage:SetAttribute("AllDesignersFrozen", false)
+end
+
+local function applyFreezeVisuals(designer, effectName)
+	local char = designer.Character
+	local visualData = {}
+	local effect = Effects[effectName] or Effects["White"]
+
+	for _, child in ipairs(char:GetDescendants()) do
+		if child:IsA("BasePart") and not child:FindFirstAncestorOfClass("Accessory") then
+			visualData[child] = {
+				Color = child.Color,
+				Material = child.Material
+			}
+			child.Color = effect.Color
+			child.Material = effect.Material
+		end
+	end
+	return visualData
+end
+
+local function checkTotalFreeze()
+	local designers = Teams:WaitForChild("Designers"):GetPlayers()
+	local frozenCount = 0
+	for _ in pairs(frozenPlayers) do
+		frozenCount += 1
+	end
+
+	if frozenCount >= #designers and #designers > 0 then
+		print("[GAME OVER] All designers are frozen. Critics win.")
+		ReplicatedStorage:SetAttribute("AllDesignersFrozen", true)
+	end
+end
+
+-------------------------------------------------
+-- Round Cleanup
+-------------------------------------------------
+StatusText:GetPropertyChangedSignal("Value"):Connect(function()
+	local val = StatusText.Value
+	if val == "Intermission" or val == "Round Over!" or val == "Selecting Map..." then
+		print("[CLEANUP] Resetting frozen players.")
+		for _, data in pairs(frozenPlayers) do
+			if data.Player then
+				unfreezePlayer(data.Player)
+			end
+		end
+	end
+end)
+
+-------------------------------------------------
+-- Freeze
+-------------------------------------------------
+local function freezePlayer(designer)
+	if frozenPlayers[designer.UserId] then return end
+
+	local char = designer.Character
+	local root = char:FindFirstChild("HumanoidRootPart")
+	local hum = char:FindFirstChild("Humanoid")
+	if not root or not hum then return end
+
+	-- Strip fabric
+	local toolInChar = char:FindFirstChild("FBRoll")
+	local toolInBackpack = designer.Backpack:FindFirstChild("FBRoll")
+	if toolInChar then toolInChar:Destroy() end
+	if toolInBackpack then toolInBackpack:Destroy() end
+	print("[TAG] " .. designer.Name .. " lost their fabric roll on freeze.")
+
+	root.Anchored = true
+
+	local chosenEffect = designer:GetAttribute("EquippedFreezeEffect") or "White"
+	local savedVisuals = applyFreezeVisuals(designer, chosenEffect)
+
+	local chosenPodiumName = designer:GetAttribute("EquippedPodium") or "BasicPodium"
+	local podiumTemplate = Podiums:FindFirstChild(chosenPodiumName) or Podiums:FindFirstChild("BasicPodium")
+	local podium = podiumTemplate:Clone()
+
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterDescendantsInstances = {char, podium}
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+
+	local rayResult = workspace:Raycast(root.Position + Vector3.new(0, 2, 0), Vector3.new(0, -20, 0), raycastParams)
+	local floorY = rayResult and rayResult.Position.Y or (root.Position.Y - 3)
+
+	local modelCFrame, modelSize = podium:GetBoundingBox()
+	local pivotPos = podium:GetPivot().Position
+	local bottomToPivotOffset = pivotPos.Y - (modelCFrame.Position.Y - (modelSize.Y / 2))
+
+	podium:PivotTo(CFrame.new(root.Position.X, floorY + bottomToPivotOffset, root.Position.Z) * CFrame.Angles(0, math.rad(root.Orientation.Y), 0))
+	podium.Parent = workspace
+
+	local chosenPoseID = designer:GetAttribute("EquippedPose") or "rbxassetid://74997474532222"
+	local anim = Instance.new("Animation")
+	anim.AnimationId = chosenPoseID
+	local poseTrack = hum:LoadAnimation(anim)
+	poseTrack:Play()
+
+	-- Instant unfreeze prompt (HoldDuration = 0)
+	local promptPart = podium:FindFirstChild("Base") or podium:FindFirstChildWhichIsA("BasePart") or podium.PrimaryPart
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ActionText = "Unfreeze Teammate"
+	prompt.ObjectText = designer.Name
+	prompt.HoldDuration = 0 -- Instant rescue
+	prompt.RequiresLineOfSight = false
+	prompt.Parent = promptPart
+
+	prompt.Triggered:Connect(function(playerWhoSaved)
+		if playerWhoSaved.Team and playerWhoSaved.Team.Name == "Designers" then
+			print("[TAG] " .. playerWhoSaved.Name .. " rescued " .. designer.Name)
+			unfreezePlayer(designer)
+		end
+	end)
+
+	frozenPlayers[designer.UserId] = {
+		TimeLeft = CANCELLATION_TIME,
+		Podium = podium,
+		PoseAnim = poseTrack,
+		Player = designer,
+		OriginalVisuals = savedVisuals
+	}
+
+	checkTotalFreeze()
+end
+
+-------------------------------------------------
+-- Anti-Camp and Timer Loop
+-------------------------------------------------
+task.spawn(function()
+	while true do
+		for userId, data in pairs(frozenPlayers) do
+			local isCamped = false
+			local designerChar = data.Player.Character
+
+			for _, critic in ipairs(Teams.Critics:GetPlayers()) do
+				local criticChar = critic.Character
+				if criticChar and designerChar
+					and criticChar:FindFirstChild("HumanoidRootPart")
+					and designerChar:FindFirstChild("HumanoidRootPart") then
+					local dist = (criticChar.HumanoidRootPart.Position - designerChar.HumanoidRootPart.Position).Magnitude
+					if dist < ANTI_CAMP_DISTANCE then
+						isCamped = true
+						break
+					end
+				end
+			end
+
+			if not isCamped then
+				data.TimeLeft -= 1
+				if data.TimeLeft <= 0 then
+					cancelPlayer(data.Player)
+					unfreezePlayer(data.Player)
+				end
+			end
+		end
+		task.wait(1)
+	end
+end)
+
+-------------------------------------------------
+-- Freeze Event Listener
+-------------------------------------------------
+ReplicatedStorage.Remotes.FreezeEvent.OnServerEvent:Connect(function(player, hitCharacter)
+	if player.Team and player.Team.Name == "Critics" then
+		local targetPlayer = Players:GetPlayerFromCharacter(hitCharacter)
+		if targetPlayer and targetPlayer.Team and targetPlayer.Team.Name == "Designers" then
+			if not frozenPlayers[targetPlayer.UserId] then
+				freezePlayer(targetPlayer)
+				rewardCritic(player)
+			end
+		end
+	end
+end)
