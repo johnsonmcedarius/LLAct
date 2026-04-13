@@ -1,0 +1,144 @@
+-- ============================================================
+-- ShowstopperService (Script in ServerScriptService)
+-- Listens for activation requests, validates charge, calls Execute
+-- ============================================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local ActivateShowstopper = Remotes:FindFirstChild("ActivateShowstopper") or Instance.new("RemoteEvent", Remotes)
+ActivateShowstopper.Name = "ActivateShowstopper"
+
+local UpdateShowstopperCharge = Remotes:FindFirstChild("UpdateShowstopperCharge") or Instance.new("RemoteEvent", Remotes)
+UpdateShowstopperCharge.Name = "UpdateShowstopperCharge"
+
+local ShowstoppersFolder = ReplicatedStorage:WaitForChild("Showstoppers")
+
+-- Config
+local MAX_CHARGE = 100
+local CHARGE_PER_DEPOSIT = 20   -- Designers earn charge by depositing fabric
+local CHARGE_PER_FREEZE = 25    -- Critics earn charge by freezing
+
+-- State
+local playerCharge = {}   -- [userId] = number
+local cooldowns = {}      -- [userId] = os.clock() expiry
+
+-- Module cache
+local moduleCache = {}
+
+local function getModule(teamName, moduleName)
+	local key = teamName .. "_" .. moduleName
+	if moduleCache[key] then return moduleCache[key] end
+
+	local folder = ShowstoppersFolder:FindFirstChild(teamName)
+	if not folder then return nil end
+
+	local moduleScript = folder:FindFirstChild(moduleName)
+	if not moduleScript then return nil end
+
+	local ok, result = pcall(require, moduleScript)
+	if ok then
+		moduleCache[key] = result
+		return result
+	else
+		warn("[SHOWSTOPPER] Failed to load module " .. moduleName .. ": " .. tostring(result))
+		return nil
+	end
+end
+
+local function getCharge(player)
+	return playerCharge[player.UserId] or 0
+end
+
+local function addCharge(player, amount)
+	local current = getCharge(player)
+	playerCharge[player.UserId] = math.clamp(current + amount, 0, MAX_CHARGE)
+	UpdateShowstopperCharge:FireClient(player, playerCharge[player.UserId], MAX_CHARGE)
+	print("[SHOWSTOPPER] " .. player.Name .. " charge: " .. playerCharge[player.UserId])
+end
+
+local function resetCharge(player)
+	playerCharge[player.UserId] = 0
+	UpdateShowstopperCharge:FireClient(player, 0, MAX_CHARGE)
+end
+
+-- Expose charge functions globally so other scripts can call them
+_G.ShowstopperService = {
+	AddChargeForDeposit = function(player)
+		addCharge(player, CHARGE_PER_DEPOSIT)
+	end,
+	AddChargeForFreeze = function(player)
+		addCharge(player, CHARGE_PER_FREEZE)
+	end,
+}
+
+-- Activation handler
+ActivateShowstopper.OnServerEvent:Connect(function(player, moduleName)
+	local charge = getCharge(player)
+	if charge < MAX_CHARGE then
+		print("[SHOWSTOPPER] " .. player.Name .. " tried to activate with insufficient charge: " .. charge)
+		return
+	end
+
+	local now = os.clock()
+	local cooldownExpiry = cooldowns[player.UserId] or 0
+	if now < cooldownExpiry then
+		print("[SHOWSTOPPER] " .. player.Name .. " is on cooldown.")
+		return
+	end
+
+	if not (player.Team) then return end
+	local teamName = player.Team.Name
+
+	-- Determine which module to use based on team
+	local targetModule = moduleName
+	if not targetModule then
+		-- Default: first showstopper for their team
+		local folder = ShowstoppersFolder:FindFirstChild(teamName)
+		if folder and #folder:GetChildren() > 0 then
+			targetModule = folder:GetChildren()[1].Name
+		end
+	end
+
+	if not targetModule then
+		warn("[SHOWSTOPPER] No module found for team: " .. teamName)
+		return
+	end
+
+	local mod = getModule(teamName, targetModule)
+	if not mod then
+		warn("[SHOWSTOPPER] Module not loaded: " .. tostring(targetModule))
+		return
+	end
+
+	-- Execute and reset
+	print("[SHOWSTOPPER] Executing " .. targetModule .. " for " .. player.Name)
+	local ok, err = pcall(mod.Execute, player)
+	if not ok then
+		warn("[SHOWSTOPPER] Execute error: " .. tostring(err))
+		return
+	end
+
+	resetCharge(player)
+	cooldowns[player.UserId] = now + (mod.Config.Cooldown or 60)
+end)
+
+-- Reset on round end
+local StatusValues = ReplicatedStorage:WaitForChild("StatusValues")
+local StatusText = StatusValues:WaitForChild("StatusText")
+
+StatusText:GetPropertyChangedSignal("Value"):Connect(function()
+	local val = StatusText.Value
+	if val == "Intermission" or val == "Round Over!" then
+		for _, p in ipairs(Players:GetPlayers()) do
+			resetCharge(p)
+			cooldowns[p.UserId] = nil
+		end
+	end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	playerCharge[player.UserId] = nil
+	cooldowns[player.UserId] = nil
+end)
