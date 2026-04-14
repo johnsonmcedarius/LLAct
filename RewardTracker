@@ -1,0 +1,328 @@
+-- RewardTracker (Script in ServerScriptService)
+-- Tracks per-round objective scores for every player.
+-- Handles: survival time passive income, apply-pressure detection,
+-- MVP calculation, end-of-round reward distribution.
+-- Exposes _G.RewardTracker for other scripts to log events.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Teams = game:GetService("Teams")
+local RunService = game:GetService("RunService")
+
+local StatusValues = ReplicatedStorage:WaitForChild("StatusValues")
+local StatusText   = StatusValues:WaitForChild("StatusText")
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+local ShowRewardPopup = Remotes:FindFirstChild("ShowRewardPopup") or Instance.new("RemoteEvent", Remotes)
+ShowRewardPopup.Name = "ShowRewardPopup"
+
+local ShowMVP = Remotes:FindFirstChild("ShowMVP") or Instance.new("RemoteEvent", Remotes)
+ShowMVP.Name = "ShowMVP"
+
+local ShowEndStats = Remotes:FindFirstChild("ShowEndStats") or Instance.new("RemoteEvent", Remotes)
+ShowEndStats.Name = "ShowEndStats"
+
+-- ============================================================
+-- Reward Config
+-- ============================================================
+local Rewards = {
+	-- Designers
+	DesignerWin          = {XP = 150, Coins = 50},
+	FabricCollect        = {XP = 15,  Coins = 5},
+	UnfreezeAlly         = {XP = 50,  Coins = 15},
+	SurvivalPerMinute    = {XP = 10,  Coins = 2},
+
+	-- Critics
+	CriticWin            = {XP = 200, Coins = 75},
+	FreezeDesigner       = {XP = 75,  Coins = 20},
+	SabotageStation      = {XP = 25,  Coins = 10},
+	ApplyPressure        = {XP = 10,  Coins = 3},
+
+	-- MVP bonuses
+	DesignerMVP          = {XP = 100, Coins = 50},
+	CriticMVP            = {XP = 120, Coins = 60},
+}
+
+-- ============================================================
+-- Per-round score tracking
+-- Score = objective metric used for MVP calculation
+-- ============================================================
+local roundScores = {}     -- [userId] = { fabricCount, unfreezes, freezes, neverFrozen, sabotages }
+local roundStartTime = {}  -- [userId] = os.clock()
+local roundActive = false
+
+local function initScore(player)
+	roundScores[player.UserId] = {
+		fabricCount  = 0,
+		unfreezes    = 0,
+		freezes      = 0,
+		neverFrozen  = true,
+		sabotages    = 0,
+		xpEarned     = 0,
+		coinsEarned  = 0,
+	}
+	roundStartTime[player.UserId] = os.clock()
+end
+
+local function getScore(player)
+	return roundScores[player.UserId]
+end
+
+local function giveReward(player, rewardKey, label)
+	local r = Rewards[rewardKey]
+	if not r then return end
+	if not _G.DataManager then return end
+
+	_G.DataManager.AddReward(player, r.XP, r.Coins, label)
+
+	local score = getScore(player)
+	if score then
+		score.xpEarned    += r.XP
+		score.coinsEarned += r.Coins
+	end
+end
+
+-- ============================================================
+-- Global API
+-- ============================================================
+_G.RewardTracker = {
+
+	OnFabricCollect = function(player)
+		giveReward(player, "FabricCollect", "+15 XP  +5 Coins")
+		local s = getScore(player)
+		if s then s.fabricCount += 1 end
+	end,
+
+	OnUnfreezeAlly = function(player)
+		giveReward(player, "UnfreezeAlly", "+50 XP  +15 Coins")
+		local s = getScore(player)
+		if s then s.unfreezes += 1 end
+	end,
+
+	OnFreezeDesigner = function(critic)
+		giveReward(critic, "FreezeDesigner", "+75 XP  +20 Coins")
+		local s = getScore(critic)
+		if s then s.freezes += 1 end
+	end,
+
+	OnSabotage = function(critic)
+		giveReward(critic, "SabotageStation", "+25 XP  +10 Coins")
+		local s = getScore(critic)
+		if s then s.sabotages += 1 end
+	end,
+
+	OnPlayerFrozen = function(designer)
+		local s = getScore(designer)
+		if s then s.neverFrozen = false end
+	end,
+
+	OnApplyPressure = function(critic)
+		giveReward(critic, "ApplyPressure", "+10 XP  +3 Coins")
+	end,
+
+	GetScore = getScore,
+}
+
+-- ============================================================
+-- Survival time passive income (every 60 seconds of being alive)
+-- ============================================================
+task.spawn(function()
+	local lastTick = {}
+	while true do
+		task.wait(60)
+		if not roundActive then continue end
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p.Team and (p.Team.Name == "Designers" or p.Team.Name == "Critics") then
+				if not lastTick[p.UserId] then lastTick[p.UserId] = os.clock() end
+				giveReward(p, "SurvivalPerMinute", "+10 XP  +2 Coins")
+			end
+		end
+	end
+end)
+
+-- ============================================================
+-- Apply Pressure detection
+-- Critic within 10 studs of a single Designer for 15+ consecutive seconds
+-- ============================================================
+local pressureTimers = {}  -- [criticUserId] = { startTime, targetUserId }
+
+task.spawn(function()
+	while true do
+		task.wait(1)
+		if not roundActive then
+			pressureTimers = {}
+			continue
+		end
+
+		for _, critic in ipairs(Players:GetPlayers()) do
+			if not (critic.Team and critic.Team.Name == "Critics") then continue end
+			local criticRoot = critic.Character and critic.Character:FindFirstChild("HumanoidRootPart")
+			if not criticRoot then continue end
+
+			local closeDesigner = nil
+			local closestDist = math.huge
+
+			for _, designer in ipairs(Players:GetPlayers()) do
+				if not (designer.Team and designer.Team.Name == "Designers") then continue end
+				local dRoot = designer.Character and designer.Character:FindFirstChild("HumanoidRootPart")
+				if not dRoot then continue end
+				local dist = (criticRoot.Position - dRoot.Position).Magnitude
+				if dist < 10 and dist < closestDist then
+					closestDist  = dist
+					closeDesigner = designer
+				end
+			end
+
+			if closeDesigner then
+				local entry = pressureTimers[critic.UserId]
+				if entry and entry.targetUserId == closeDesigner.UserId then
+					-- Same target, accumulate time
+					if os.clock() - entry.startTime >= 15 then
+						_G.RewardTracker.OnApplyPressure(critic)
+						pressureTimers[critic.UserId] = nil -- reset after reward
+					end
+				else
+					-- New target
+					pressureTimers[critic.UserId] = {
+						startTime    = os.clock(),
+						targetUserId = closeDesigner.UserId,
+					}
+				end
+			else
+				pressureTimers[critic.UserId] = nil
+			end
+		end
+	end
+end)
+
+-- ============================================================
+-- MVP Calculation
+-- Designer MVP: highest (fabricCount*3 + unfreezes*2) + neverFrozen bonus
+-- Critic MVP:   most freezes (flawless wipeout)
+-- ============================================================
+local function calculateMVP(winningTeamName)
+	local designerMVP, criticMVP
+	local bestDesignerScore = -1
+	local bestCriticScore   = -1
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		local s = getScore(p)
+		if not s then continue end
+
+		if p.Team and p.Team.Name == "Designers" then
+			local score = (s.fabricCount * 3) + (s.unfreezes * 2) + (s.neverFrozen and 5 or 0)
+			if score > bestDesignerScore then
+				bestDesignerScore = score
+				designerMVP = p
+			end
+		elseif p.Team and p.Team.Name == "Critics" then
+			if s.freezes > bestCriticScore then
+				bestCriticScore = s.freezes
+				criticMVP = p
+			end
+		end
+	end
+
+	return designerMVP, criticMVP
+end
+
+-- ============================================================
+-- End-of-round payout and MVP reveal
+-- ============================================================
+local function endRound(winningTeamName)
+	roundActive = false
+
+	-- Base win rewards
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Team then
+			if p.Team.Name == winningTeamName then
+				local key = (winningTeamName == "Designers") and "DesignerWin" or "CriticWin"
+				giveReward(p, key, "WIN BONUS!")
+			end
+		end
+	end
+
+	task.wait(0.5)
+
+	-- MVP
+	local designerMVP, criticMVP = calculateMVP(winningTeamName)
+
+	local mvpPlayer = (winningTeamName == "Designers") and designerMVP or criticMVP
+	local mvpTitle  = (winningTeamName == "Designers") and "The Lead Designer" or "The Lead Editor"
+	local mvpKey    = (winningTeamName == "Designers") and "DesignerMVP" or "CriticMVP"
+
+	if mvpPlayer then
+		giveReward(mvpPlayer, mvpKey, "MVP BONUS!")
+		print("[MVP] " .. mvpPlayer.Name .. " is the " .. mvpTitle)
+
+		-- Collect end-stats for each player
+		local allStats = {}
+		for _, p in ipairs(Players:GetPlayers()) do
+			local s = getScore(p)
+			if s then
+				table.insert(allStats, {
+					Name      = p.Name,
+					UserId    = p.UserId,
+					XP        = s.xpEarned,
+					Coins     = s.coinsEarned,
+				})
+			end
+		end
+
+		-- Fire MVP event to ALL clients
+		ShowMVP:FireAllClients(mvpPlayer.Name, mvpPlayer.UserId, mvpTitle)
+
+		-- After 10 seconds, show stats
+		task.delay(10, function()
+			for _, p in ipairs(Players:GetPlayers()) do
+				local myStats = getScore(p)
+				ShowEndStats:FireClient(p, allStats, myStats and myStats.xpEarned or 0, myStats and myStats.coinsEarned or 0)
+			end
+		end)
+	end
+end
+
+-- ============================================================
+-- Round lifecycle hooks
+-- ============================================================
+StatusText:GetPropertyChangedSignal("Value"):Connect(function()
+	local val = StatusText.Value
+
+	if val == "Game Starting..." then
+		roundActive = true
+		pressureTimers = {}
+		for _, p in ipairs(Players:GetPlayers()) do
+			initScore(p)
+		end
+		print("[REWARDS] Round started. Score tracking active.")
+	end
+
+	if val:find("Win") or val:find("Collection") or val == "Round Over!" then
+		if roundActive then
+			local teamName
+			if val:find("Critics") then
+				teamName = "Critics"
+			else
+				teamName = "Designers"
+			end
+			endRound(teamName)
+		end
+	end
+
+	if val == "Intermission" or val == "Round Over!" then
+		roundScores = {}
+		roundStartTime = {}
+		pressureTimers = {}
+	end
+end)
+
+Players.PlayerAdded:Connect(function(p)
+	if roundActive then initScore(p) end
+end)
+
+Players.PlayerRemoving:Connect(function(p)
+	roundScores[p.UserId]    = nil
+	roundStartTime[p.UserId] = nil
+	pressureTimers[p.UserId] = nil
+end)
