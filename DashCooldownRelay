@@ -1,20 +1,39 @@
 -- DashCooldownRelay (Script in ServerScriptService)
--- Phase 2.5 fix: StaminaSystem fires DashCooldownUpdate to the server,
--- this script fires it back to the same client so HUDController picks it up.
--- This keeps the RemoteEvent flow server-authoritative.
+-- Phase 4 fix: server dictates DASH_COOLDOWN, ignores client-supplied duration.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
-local DashCooldownUpdate = Remotes:FindFirstChild("DashCooldownUpdate") or Instance.new("RemoteEvent", Remotes)
-DashCooldownUpdate.Name = "DashCooldownUpdate"
-
-DashCooldownUpdate.OnServerEvent:Connect(function(player, duration)
-	-- Validate duration is reasonable
-	if type(duration) ~= "number" or duration <= 0 or duration > 30 then
-		warn("[DASH] Invalid cooldown duration from " .. player.Name)
-		return
+local function getRemote(name)
+	local r = Remotes:FindFirstChild(name)
+	if not r then
+		r = Instance.new("RemoteEvent")
+		r.Name   = name
+		r.Parent = Remotes
 	end
-	-- Relay back to the same client for HUDController
-	DashCooldownUpdate:FireClient(player, duration)
+	return r
+end
+
+local DashCooldownUpdate = getRemote("DashCooldownUpdate")
+
+-- Server owns this value. Client fires to trigger it, but we reply with OUR number.
+local SERVER_DASH_COOLDOWN = 4.0
+
+-- Rate limit: prevent even this benign relay from being spammed
+local lastFired = {}  -- [userId] = os.clock()
+
+DashCooldownUpdate.OnServerEvent:Connect(function(player)
+	local now = os.clock()
+	if now - (lastFired[player.UserId] or 0) < SERVER_DASH_COOLDOWN - 0.1 then
+		return  -- Too fast, ignore
+	end
+	lastFired[player.UserId] = now
+
+	-- Reply with server-authoritative cooldown value
+	DashCooldownUpdate:FireClient(player, SERVER_DASH_COOLDOWN)
+end)
+
+local Players = game:GetService("Players")
+Players.PlayerRemoving:Connect(function(p)
+	lastFired[p.UserId] = nil
 end)
