@@ -1,0 +1,81 @@
+-- ============================================================
+-- HUDModule_Abilities (ModuleScript)
+-- Handles: ability slot display, spin animation, slot unlock state
+-- ============================================================
+ 
+local HUDModule_Abilities = {}
+ 
+function HUDModule_Abilities.Init(screenGui, remotes, SoundService)
+	local UpdateAbilitySlots = remotes:WaitForChild("UpdateAbilitySlots")
+	local AbilitySpinResult  = remotes:WaitForChild("AbilitySpinResult")
+	local TweenService       = game:GetService("TweenService")
+ 
+	local RARITY_COLORS = {
+		Common    = Color3.fromRGB(180, 180, 180),
+		Rare      = Color3.fromRGB(80, 130, 255),
+		Epic      = Color3.fromRGB(160, 50, 255),
+		Legendary = Color3.fromRGB(255, 180, 0),
+		Mythic    = Color3.fromRGB(255, 50, 150),
+	}
+ 
+	local function getFrame(name)
+		return screenGui:FindFirstChild(name, true)
+	end
+ 
+	-- Update ability slot UI when server sends slot state
+	-- Expected: AbilitySlots frame > Slot1, Slot2, Slot3
+	--           Each slot: AbilityNameLabel, RarityBorder (Frame), LockOverlay (Frame)
+	UpdateAbilitySlots.OnClientEvent:Connect(function(slots, unlockedSlots)
+		for i = 1, 3 do
+			local slot      = getFrame("Slot" .. i)
+			local nameLabel = slot and slot:FindFirstChild("AbilityNameLabel")
+			local lockOverlay = slot and slot:FindFirstChild("LockOverlay")
+			local rarityBorder = slot and slot:FindFirstChild("RarityBorder")
+ 
+			if not slot then continue end
+ 
+			-- Lock overlay
+			if lockOverlay then
+				lockOverlay.Visible = (i > unlockedSlots)
+			end
+ 
+			-- Name label
+			if nameLabel then
+				nameLabel.Text = slots[i] or "Empty - Spin!"
+			end
+ 
+			-- Rarity border hidden by default
+			if rarityBorder then rarityBorder.Visible = false end
+		end
+	end)
+ 
+	-- Spin result animation: flash the slot with rarity color
+	AbilitySpinResult.OnClientEvent:Connect(function(slotIndex, result)
+		local slot        = getFrame("Slot" .. slotIndex)
+		local rarityBorder = slot and slot:FindFirstChild("RarityBorder")
+		local nameLabel   = slot and slot:FindFirstChild("AbilityNameLabel")
+ 
+		if nameLabel then nameLabel.Text = result.Name end
+ 
+		if rarityBorder then
+			local color = RARITY_COLORS[result.Rarity] or Color3.new(1,1,1)
+			rarityBorder.BackgroundColor3 = color
+			rarityBorder.Visible = true
+ 
+			-- Pulse 3 times
+			for i = 1, 3 do
+				task.delay(i * 0.25, function()
+					TweenService:Create(rarityBorder, TweenInfo.new(0.1), {BackgroundTransparency = 0}):Play()
+					task.delay(0.15, function()
+						TweenService:Create(rarityBorder, TweenInfo.new(0.15), {BackgroundTransparency = 0.5}):Play()
+					end)
+				end)
+			end
+		end
+ 
+		SoundService.PlayLocal("FabricDunk")
+	end)
+end
+ 
+return HUDModule_Abilities
+ 
