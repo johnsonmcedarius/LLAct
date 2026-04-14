@@ -1,0 +1,20 @@
+-- DashCooldownRelay (Script in ServerScriptService)
+-- Phase 2.5 fix: StaminaSystem fires DashCooldownUpdate to the server,
+-- this script fires it back to the same client so HUDController picks it up.
+-- This keeps the RemoteEvent flow server-authoritative.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+local DashCooldownUpdate = Remotes:FindFirstChild("DashCooldownUpdate") or Instance.new("RemoteEvent", Remotes)
+DashCooldownUpdate.Name = "DashCooldownUpdate"
+
+DashCooldownUpdate.OnServerEvent:Connect(function(player, duration)
+	-- Validate duration is reasonable
+	if type(duration) ~= "number" or duration <= 0 or duration > 30 then
+		warn("[DASH] Invalid cooldown duration from " .. player.Name)
+		return
+	end
+	-- Relay back to the same client for HUDController
+	DashCooldownUpdate:FireClient(player, duration)
+end)
