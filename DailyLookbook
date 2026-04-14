@@ -1,0 +1,181 @@
+-- DailyLookbook (Script in ServerScriptService)
+-- 3 random challenges per player every 24 hours.
+-- Completing all 3 rewards 100 Coins or a CoinDesignerCrate.
+-- Progress is tracked in the player's profile data.
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+local function getRemote(name)
+	local r = Remotes:FindFirstChild(name)
+	if not r then r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes end
+	return r
+end
+
+local GetDailyChallenges      = getRemote("GetDailyChallenges")
+local DailyChallengeUpdate    = getRemote("DailyChallengeUpdate")
+local CompleteChallengeProgress = getRemote("CompleteChallengeProgress")
+
+local TWENTY_FOUR_HOURS = 86400  -- seconds
+
+-- Challenge templates
+local ChallengeTemplates = {
+	{Id = "pass_5",       Desc = "Pass the fabric roll 5 times",   Goal = 5,  Stat = "Passes"},
+	{Id = "dunk_3",       Desc = "Dunk 3 fabric rolls in one match", Goal = 3,  Stat = "Dunks"},
+	{Id = "stun_critic_2",Desc = "Stun a Critic twice",             Goal = 2,  Stat = "Stuns"},
+	{Id = "unfreeze_2",   Desc = "Unfreeze 2 teammates",            Goal = 2,  Stat = "Rescues"},
+	{Id = "survive_3min", Desc = "Survive 3 minutes in a round",    Goal = 3,  Stat = "SurvivalMins"},
+	{Id = "collect_5",    Desc = "Collect 5 fabric rolls",          Goal = 5,  Stat = "FabricCollects"},
+	{Id = "dash_10",      Desc = "Use Fashion Dash 10 times",       Goal = 10, Stat = "Dashes"},
+	{Id = "freeze_2",     Desc = "Freeze 2 Designers (as Critic)",  Goal = 2,  Stat = "Freezes"},
+	{Id = "sabotage_2",   Desc = "Sabotage 2 fabric racks",         Goal = 2,  Stat = "Sabotages"},
+}
+
+-- Per-player daily state (runtime cache, persisted via DataManager profile)
+local dailyData = {}  -- [userId] = {challenges, progress, lastReset, completed}
+
+local function getOrCreateDaily(player)
+	if dailyData[player.UserId] then return dailyData[player.UserId] end
+
+	local profileData = _G.DataManager and _G.DataManager.GetData(player)
+	local saved = profileData and profileData.DailyLookbook
+
+	local now = os.time()
+	local needsReset = not saved or (now - (saved.lastReset or 0)) >= TWENTY_FOUR_HOURS
+
+	if needsReset then
+		-- Shuffle and pick 3 random challenges
+		local shuffled = {}
+		for _, t in ipairs(ChallengeTemplates) do table.insert(shuffled, t) end
+		for i = #shuffled, 2, -1 do
+			local j = math.random(i)
+			shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+		end
+
+		local chosen = {}
+		for i = 1, 3 do table.insert(chosen, shuffled[i]) end
+
+		dailyData[player.UserId] = {
+			challenges = chosen,
+			progress   = {0, 0, 0},
+			lastReset  = now,
+			completed  = false,
+			rewarded   = false,
+		}
+
+		-- Persist to profile
+		if profileData then
+			profileData.DailyLookbook = {
+				challenges = chosen,
+				progress   = {0, 0, 0},
+				lastReset  = now,
+				completed  = false,
+				rewarded   = false,
+			}
+		end
+
+		print("[DAILY] New challenges generated for " .. player.Name)
+	else
+		dailyData[player.UserId] = {
+			challenges = saved.challenges,
+			progress   = saved.progress or {0, 0, 0},
+			lastReset  = saved.lastReset,
+			completed  = saved.completed or false,
+			rewarded   = saved.rewarded or false,
+		}
+	end
+
+	return dailyData[player.UserId]
+end
+
+local function syncToClient(player)
+	local data = dailyData[player.UserId]
+	if not data then return end
+	DailyChallengeUpdate:FireClient(player, data.challenges, data.progress, data.completed)
+end
+
+local function checkCompletion(player)
+	local data = dailyData[player.UserId]
+	if not data or data.rewarded then return end
+
+	for i, challenge in ipairs(data.challenges) do
+		if (data.progress[i] or 0) < challenge.Goal then return end
+	end
+
+	data.completed = true
+	data.rewarded  = true
+
+	-- Reward: 100 Coins or a CoinDesignerCrate
+	local reward = math.random(2)
+	if reward == 1 then
+		if _G.DataManager then _G.DataManager.AddCoins(player, 100) end
+		print("[DAILY] " .. player.Name .. " completed Daily Lookbook! Rewarded 100 Coins.")
+	else
+		if _G.GachaService then _G.GachaService.AddCrate(player, "CoinDesignerCrate", 1) end
+		print("[DAILY] " .. player.Name .. " completed Daily Lookbook! Rewarded a CoinDesignerCrate.")
+	end
+
+	-- Persist
+	local profileData = _G.DataManager and _G.DataManager.GetData(player)
+	if profileData and profileData.DailyLookbook then
+		profileData.DailyLookbook.completed = true
+		profileData.DailyLookbook.rewarded  = true
+	end
+
+	syncToClient(player)
+end
+
+-------------------------------------------------
+-- Progress tracking (called by other systems)
+-------------------------------------------------
+_G.DailyLookbook = {
+	AddProgress = function(player, stat, amount)
+		local data = dailyData[player.UserId]
+		if not data or data.completed then return end
+
+		local changed = false
+		for i, challenge in ipairs(data.challenges) do
+			if challenge.Stat == stat then
+				data.progress[i] = math.min(
+					(data.progress[i] or 0) + (amount or 1),
+					challenge.Goal
+				)
+				changed = true
+			end
+		end
+
+		if changed then
+			-- Persist
+			local profileData = _G.DataManager and _G.DataManager.GetData(player)
+			if profileData and profileData.DailyLookbook then
+				profileData.DailyLookbook.progress = data.progress
+			end
+
+			syncToClient(player)
+			checkCompletion(player)
+		end
+	end,
+}
+
+-------------------------------------------------
+-- Remote: client requests current challenges
+-------------------------------------------------
+GetDailyChallenges.OnServerEvent:Connect(function(player)
+	getOrCreateDaily(player)
+	syncToClient(player)
+end)
+
+-------------------------------------------------
+-- Player lifecycle
+-------------------------------------------------
+Players.PlayerAdded:Connect(function(player)
+	task.wait(3)  -- Wait for DataManager to load profile
+	getOrCreateDaily(player)
+	syncToClient(player)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	dailyData[player.UserId] = nil
+end)
