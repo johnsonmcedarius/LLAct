@@ -1,0 +1,137 @@
+-- WeaponEffectService (Script in ServerScriptService)
+-- When a player equips a weapon tool, applies animated texture effects
+-- from ReplicatedStorage.Assets.WeaponEffects/<EffectName> to the weapon Handle.
+-- Textures scroll via TweenService OffsetStudsU/V (repeat -1).
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService      = game:GetService("TweenService")
+
+local Assets           = ReplicatedStorage:WaitForChild("Assets")
+local WeaponEffects    = Assets:FindFirstChild("WeaponEffects")  -- graceful if missing
+
+local TEXTURE_SCROLL_SPEED = 50
+
+-------------------------------------------------
+-- Apply effect to all BaseParts of a weapon
+-------------------------------------------------
+local function applyWeaponEffect(weapon, effectName)
+	if not WeaponEffects then
+		print("[WEAPON FX] WeaponEffects folder not found in Assets.")
+		return
+	end
+
+	local template = WeaponEffects:FindFirstChild(effectName)
+	if not template then
+		print("[WEAPON FX] No template for effect: " .. tostring(effectName))
+		return
+	end
+
+	-- Gather textures from template
+	local textures = {}
+	for _, item in ipairs(template:GetChildren()) do
+		if item:IsA("Texture") or item:IsA("Decal") then
+			table.insert(textures, item)
+		end
+	end
+
+	if #textures == 0 then
+		print("[WEAPON FX] No textures in template: " .. effectName)
+		return
+	end
+
+	-- Apply to every BasePart in the weapon
+	for _, part in ipairs(weapon:GetDescendants()) do
+		if not part:IsA("BasePart") then continue end
+
+		for _, tex in ipairs(textures) do
+			-- Remove existing clones of this texture to avoid stacking
+			for _, existing in ipairs(part:GetChildren()) do
+				if existing.Name == tex.Name and (existing:IsA("Texture") or existing:IsA("Decal")) then
+					existing:Destroy()
+				end
+			end
+
+			local clone = tex:Clone()
+			clone.Parent = part
+
+			if clone:IsA("Texture") then
+				local tileSize  = clone.StudsPerTileU > 0 and clone.StudsPerTileU or 4
+				local cycleSecs = tileSize / TEXTURE_SCROLL_SPEED
+
+				TweenService:Create(
+					clone,
+					TweenInfo.new(cycleSecs, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, -1, false),
+					{OffsetStudsU = clone.StudsPerTileU, OffsetStudsV = clone.StudsPerTileV}
+				):Play()
+			end
+		end
+	end
+
+	print("[WEAPON FX] Applied " .. effectName .. " to " .. weapon.Name)
+end
+
+local function removeWeaponEffect(weapon)
+	for _, part in ipairs(weapon:GetDescendants()) do
+		if part:IsA("BasePart") then
+			for _, child in ipairs(part:GetChildren()) do
+				if child:IsA("Texture") or child:IsA("Decal") then
+					-- Only remove effect-applied ones (tagged)
+					if child:GetAttribute("IsWeaponEffect") then
+						child:Destroy()
+					end
+				end
+			end
+		end
+	end
+end
+
+-------------------------------------------------
+-- Watch characters for weapon equip
+-------------------------------------------------
+local function watchCharacter(player, char)
+	char.ChildAdded:Connect(function(child)
+		if not child:IsA("Tool") then return end
+
+		-- Small delay so tool is fully loaded
+		task.wait(0.1)
+
+		local effectName = player:GetAttribute("EquippedWeapon")
+		if not effectName or effectName == "BasicScissors" then return end
+
+		applyWeaponEffect(child, effectName)
+	end)
+
+	char.ChildRemoved:Connect(function(child)
+		if child:IsA("Tool") then
+			removeWeaponEffect(child)
+		end
+	end)
+end
+
+local function onPlayerAdded(player)
+	player.CharacterAdded:Connect(function(char)
+		watchCharacter(player, char)
+	end)
+	if player.Character then
+		watchCharacter(player, player.Character)
+	end
+
+	-- Re-apply if the EquippedWeapon attribute changes (player equips new skin)
+	player:GetAttributeChangedSignal("EquippedWeapon"):Connect(function()
+		local char = player.Character
+		if not char then return end
+		for _, tool in ipairs(char:GetChildren()) do
+			if tool:IsA("Tool") then
+				removeWeaponEffect(tool)
+				local effectName = player:GetAttribute("EquippedWeapon")
+				if effectName and effectName ~= "BasicScissors" then
+					applyWeaponEffect(tool, effectName)
+				end
+			end
+		end
+	end)
+end
+
+for _, p in ipairs(Players:GetPlayers()) do onPlayerAdded(p) end
+Players.PlayerAdded:Connect(onPlayerAdded)
