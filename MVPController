@@ -1,0 +1,203 @@
+-- MVPController (LocalScript in StarterPlayerScripts)
+-- Phase 3: listens for ShowMVP, does a slow cinematic zoom to the MVP player,
+-- displays their title and avatar, then after 10s shows end-stats popup.
+-- All UI panels are expected in GameHUD. This script wires the logic only.
+
+local Players       = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService  = game:GetService("TweenService")
+local RunService    = game:GetService("RunService")
+local Debris        = game:GetService("Debris")
+
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
+
+local Remotes    = ReplicatedStorage:WaitForChild("Remotes")
+local ShowMVP    = Remotes:WaitForChild("ShowMVP")
+local ShowEndStats = Remotes:WaitForChild("ShowEndStats")
+
+-- GUI refs (expected in GameHUD ScreenGui)
+local screenGui = player.PlayerGui:WaitForChild("GameHUD", 5)
+
+local function getFrame(name)
+	return screenGui and screenGui:FindFirstChild(name, true)
+end
+
+-------------------------------------------------
+-- MVP Camera Sequence
+-- Slow zoom from behind/above to a close-up of the MVP
+-------------------------------------------------
+local function startMVPCamera(mvpPlayer)
+	local char = mvpPlayer.Character
+	if not char then return end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	camera.CameraType = Enum.CameraType.Scriptable
+
+	-- Starting position: pulled back and elevated
+	local startOffset = Vector3.new(0, 10, 20)
+	local endOffset   = Vector3.new(0, 3, 6)
+
+	local startCF = CFrame.new(root.Position + startOffset, root.Position + Vector3.new(0, 1, 0))
+	local endCF   = CFrame.new(root.Position + endOffset,   root.Position + Vector3.new(0, 1, 0))
+
+	camera.CFrame = startCF
+
+	-- Slow zoom over 4 seconds
+	local zoomTween = TweenService:Create(camera,
+		TweenInfo.new(4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+		{CFrame = endCF}
+	)
+	zoomTween:Play()
+
+	-- Keep camera tracking the MVP root while tweening
+	local trackConn
+	trackConn = RunService.RenderStepped:Connect(function()
+		if not root or not root.Parent then
+			trackConn:Disconnect()
+			return
+		end
+		-- Recompute end target in case MVP moved slightly
+		local lookTarget = root.Position + Vector3.new(0, 1, 0)
+		camera.CFrame = CFrame.new(camera.CFrame.Position, lookTarget)
+	end)
+
+	-- After 10 seconds, restore camera and disconnect
+	task.delay(10, function()
+		trackConn:Disconnect()
+		zoomTween:Cancel()
+		camera.CameraType = Enum.CameraType.Custom
+	end)
+end
+
+-------------------------------------------------
+-- MVP UI
+-- Expected frames in GameHUD:
+--   MVPFrame          - full/partial screen overlay
+--     MVPTitleLabel   - "THE LEAD DESIGNER"
+--     MVPNameLabel    - player name
+--     MVPAvatarImage  - ImageLabel (we set Image to the player's thumbnail)
+-------------------------------------------------
+local function showMVPUI(mvpName, mvpUserId, mvpTitle)
+	local frame      = getFrame("MVPFrame")
+	local titleLabel = getFrame("MVPTitleLabel")
+	local nameLabel  = getFrame("MVPNameLabel")
+	local avatar     = getFrame("MVPAvatarImage")
+
+	if not frame then return end
+
+	if titleLabel then titleLabel.Text = mvpTitle:upper() end
+	if nameLabel  then nameLabel.Text  = mvpName end
+	if avatar then
+		-- Load player thumbnail
+		local thumb = Players:GetUserThumbnailAsync(
+			mvpUserId,
+			Enum.ThumbnailType.HeadShot,
+			Enum.ThumbnailSize.Size420x420
+		)
+		avatar.Image = thumb
+	end
+
+	-- Fade in
+	frame.BackgroundTransparency = 1
+	frame.Visible = true
+	TweenService:Create(frame, TweenInfo.new(0.5), {BackgroundTransparency = 0}):Play()
+	if titleLabel then TweenService:Create(titleLabel, TweenInfo.new(0.5), {TextTransparency = 0}):Play() end
+	if nameLabel  then TweenService:Create(nameLabel,  TweenInfo.new(0.5), {TextTransparency = 0}):Play() end
+
+	SoundService.PlayLocal("ShowstopperReady")
+
+	-- Hide after 10 seconds
+	task.delay(10, function()
+		TweenService:Create(frame, TweenInfo.new(0.6), {BackgroundTransparency = 1}):Play()
+		task.delay(0.7, function()
+			frame.Visible = false
+		end)
+	end)
+end
+
+-------------------------------------------------
+-- End Stats Popup
+-- Expected frames in GameHUD:
+--   EndStatsFrame       - container
+--     MyXPLabel         - "XP Earned: +125"
+--     MyCoinsLabel      - "Coins Earned: +75"
+--     LeaderboardList   - ScrollingFrame (we populate TextLabels)
+-------------------------------------------------
+local function showEndStats(allStats, myXP, myCoins)
+	local frame      = getFrame("EndStatsFrame")
+	local myXPLabel  = getFrame("MyXPLabel")
+	local myCLabel   = getFrame("MyCoinsLabel")
+	local list       = getFrame("LeaderboardList")
+
+	if not frame then return end
+
+	if myXPLabel then myXPLabel.Text  = "XP Earned: +" .. myXP end
+	if myCLabel  then myCLabel.Text   = "Coins: +"    .. myCoins end
+
+	if list then
+		-- Clear old entries
+		for _, child in ipairs(list:GetChildren()) do
+			if child:IsA("TextLabel") or child:IsA("Frame") then child:Destroy() end
+		end
+
+		-- Sort by XP descending
+		table.sort(allStats, function(a, b) return (a.XP or 0) > (b.XP or 0) end)
+
+		for rank, stat in ipairs(allStats) do
+			local row = Instance.new("TextLabel")
+			row.Size = UDim2.new(1, 0, 0, 30)
+			row.BackgroundTransparency = 0.8
+			row.TextColor3 = Color3.new(1, 1, 1)
+			row.Font = Enum.Font.GothamBold
+			row.TextScaled = true
+			row.Text = "#" .. rank .. "  " .. stat.Name .. "  +" .. stat.XP .. " XP  +" .. stat.Coins .. " Coins"
+			row.Parent = list
+		end
+	end
+
+	frame.BackgroundTransparency = 1
+	frame.Visible = true
+	TweenService:Create(frame, TweenInfo.new(0.5), {BackgroundTransparency = 0}):Play()
+end
+
+-------------------------------------------------
+-- Event Handlers
+-------------------------------------------------
+ShowMVP.OnClientEvent:Connect(function(mvpName, mvpUserId, mvpTitle)
+	print("[MVP] " .. mvpName .. " is the MVP: " .. mvpTitle)
+
+	-- Find the MVP player object
+	local mvpPlayer
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.UserId == mvpUserId then mvpPlayer = p break end
+	end
+
+	showMVPUI(mvpName, mvpUserId, mvpTitle)
+
+	if mvpPlayer and mvpPlayer.Character then
+		startMVPCamera(mvpPlayer)
+	end
+end)
+
+ShowEndStats.OnClientEvent:Connect(function(allStats, myXP, myCoins)
+	showEndStats(allStats, myXP, myCoins)
+end)
+
+-- Hide both panels on round start
+local StatusValues = ReplicatedStorage:WaitForChild("StatusValues")
+local StatusText   = StatusValues:WaitForChild("StatusText")
+
+StatusText:GetPropertyChangedSignal("Value"):Connect(function()
+	local val = StatusText.Value
+	if val == "Game Starting..." or val == "Intermission" then
+		local mvpFrame  = getFrame("MVPFrame")
+		local statsFrame = getFrame("EndStatsFrame")
+		if mvpFrame   then mvpFrame.Visible   = false end
+		if statsFrame then statsFrame.Visible = false end
+		camera.CameraType = Enum.CameraType.Custom
+	end
+end)
