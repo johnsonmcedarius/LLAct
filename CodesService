@@ -1,0 +1,82 @@
+-- CodesService (Script in ServerScriptService)
+-- Players redeem codes for rewards.
+-- Add/remove codes by editing the CODES table below.
+-- Tracks which players have redeemed each code to prevent double-dipping.
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+local function getRemote(name)
+	local r = Remotes:FindFirstChild(name)
+	if not r then r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes end
+	return r
+end
+
+local RedeemCode = getRemote("RedeemCode")
+local CodeResult = getRemote("CodeResult")
+
+-- ============================================================
+-- CODE TABLE - edit this freely at any time
+-- Reward types: Coins, XP, CoinDesignerCrate
+-- ============================================================
+local CODES = {
+	LASTLOOK  = {Reward = "Coins",             Amount = 100,  Active = true},
+	RUNWAY100 = {Reward = "Coins",             Amount = 100,  Active = true},
+	VIPACCESS = {Reward = "CoinDesignerCrate", Amount = 1,    Active = true},
+	XPBOOST   = {Reward = "XP",               Amount = 200,  Active = true},
+	-- Add more codes here. Set Active = false to disable without deleting.
+}
+
+-- Tracks who redeemed what: stored in player profile data
+-- profile.Data.RedeemedCodes = { ["LASTLOOK"] = true, ... }
+
+local function getRedeemedCodes(player)
+	local profile = _G.DataManager and _G.DataManager.GetData(player)
+	if not profile then return {} end
+	if not profile.RedeemedCodes then profile.RedeemedCodes = {} end
+	return profile.RedeemedCodes
+end
+
+RedeemCode.OnServerEvent:Connect(function(player, code)
+	if type(code) ~= "string" then return end
+
+	-- Sanitize: uppercase, strip whitespace
+	code = code:upper():gsub("%s+", "")
+
+	local codeData = CODES[code]
+
+	if not codeData then
+		CodeResult:FireClient(player, false, "Invalid code.")
+		return
+	end
+
+	if not codeData.Active then
+		CodeResult:FireClient(player, false, "This code has expired.")
+		return
+	end
+
+	local redeemed = getRedeemedCodes(player)
+	if redeemed[code] then
+		CodeResult:FireClient(player, false, "You've already redeemed this code.")
+		return
+	end
+
+	-- Mark as redeemed
+	redeemed[code] = true
+
+	-- Give reward
+	if codeData.Reward == "Coins" then
+		if _G.DataManager then _G.DataManager.AddCoins(player, codeData.Amount) end
+		CodeResult:FireClient(player, true, "+" .. codeData.Amount .. " Coins redeemed!")
+	elseif codeData.Reward == "XP" then
+		if _G.DataManager then _G.DataManager.AddXP(player, codeData.Amount) end
+		CodeResult:FireClient(player, true, "+" .. codeData.Amount .. " XP redeemed!")
+	elseif codeData.Reward == "CoinDesignerCrate" then
+		if _G.GachaService then _G.GachaService.AddCrate(player, "CoinDesignerCrate", codeData.Amount) end
+		CodeResult:FireClient(player, true, "x" .. codeData.Amount .. " Crate(s) added to your backpack!")
+	end
+
+	print("[CODES] " .. player.Name .. " redeemed code: " .. code)
+end)
