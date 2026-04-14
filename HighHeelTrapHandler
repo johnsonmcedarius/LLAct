@@ -1,45 +1,60 @@
 -- HighHeelTrapHandler (Script in ServerScriptService)
--- Spawns floor traps server-side when a Designer activates the HighHeel tool.
+-- Phase 4 fix: server-side lastUsed cooldown so exploiters can't spam PlaceHeelTrap.
 
-local Players = game:GetService("Players")
+local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Debris = game:GetService("Debris")
+local Debris            = game:GetService("Debris")
 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
 
-local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local Remotes      = ReplicatedStorage:WaitForChild("Remotes")
 local PlaceHeelTrap = Remotes:WaitForChild("PlaceHeelTrap")
 
-local STUN_DURATION = 3
-local TRAP_LIFETIME = 10
-local DESIGNER_TEAM = "Designers"
-local CRITIC_TEAM = "Critics"
+local STUN_DURATION   = 3
+local TRAP_LIFETIME   = 10
+local SERVER_COOLDOWN = 10   -- Must match client cooldown. Server enforces this.
+local MAX_DISTANCE    = 20
+local DESIGNER_TEAM   = "Designers"
+local CRITIC_TEAM     = "Critics"
+
+-- SERVER-SIDE cooldown table (exploiter-proof)
+local lastUsed = {}  -- [userId] = os.clock()
 
 PlaceHeelTrap.OnServerEvent:Connect(function(player, trapPosition)
-	-- Validate: must be Designer
 	if not (player.Team and player.Team.Name == DESIGNER_TEAM) then return end
 
-	-- Anti-exploit: trap must be near the player
+	-- Server-side cooldown check
+	local now     = os.clock()
+	local lastTime = lastUsed[player.UserId] or 0
+	if now - lastTime < SERVER_COOLDOWN then
+		warn("[EXPLOIT] " .. player.Name .. " fired PlaceHeelTrap before cooldown expired.")
+		return
+	end
+	lastUsed[player.UserId] = now
+
+	-- Distance check
 	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 	if not root then return end
-	if (root.Position - trapPosition).Magnitude > 20 then
-		warn("[EXPLOIT] " .. player.Name .. " tried to place trap too far away.")
+	if (root.Position - trapPosition).Magnitude > MAX_DISTANCE then
+		warn("[EXPLOIT] " .. player.Name .. " trap placement too far.")
 		return
 	end
 
-	print("[HEELTRAP] " .. player.Name .. " placed a trap at " .. tostring(trapPosition))
+	-- Validate position type
+	if typeof(trapPosition) ~= "Vector3" then return end
 
-	-- Create trap hitbox
-	local trap = Instance.new("Part")
-	trap.Name = "HighHeelTrap"
-	trap.Size = Vector3.new(4, 0.5, 4)
-	trap.CFrame = CFrame.new(trapPosition)
-	trap.Anchored = true
-	trap.CanCollide = false
+	print("[HEELTRAP] " .. player.Name .. " placed trap.")
+
+	local trap        = Instance.new("Part")
+	trap.Name         = "HighHeelTrap"
+	trap.Size         = Vector3.new(4, 0.5, 4)
+	trap.CFrame       = CFrame.new(trapPosition)
+	trap.Anchored     = true
+	trap.CanCollide   = false
 	trap.Transparency = 0.5
-	trap.BrickColor = BrickColor.new("Hot pink")
-	trap.Material = Enum.Material.Neon
-	trap.Parent = workspace
+	trap.BrickColor   = BrickColor.new("Hot pink")
+	trap.Material     = Enum.Material.Neon
+	trap.Parent       = workspace
 
 	SoundService.FireToAll("HeelThud", trapPosition)
 
@@ -48,22 +63,22 @@ PlaceHeelTrap.OnServerEvent:Connect(function(player, trapPosition)
 	trap.Touched:Connect(function(hit)
 		if triggered then return end
 
-		local victimChar = hit.Parent
+		local victimChar   = hit.Parent
 		local victimPlayer = Players:GetPlayerFromCharacter(victimChar)
-		local hum = victimChar:FindFirstChildOfClass("Humanoid")
+		local hum          = victimChar:FindFirstChildOfClass("Humanoid")
 
-		if victimPlayer and victimPlayer.Team and victimPlayer.Team.Name == CRITIC_TEAM and hum then
+		if victimPlayer and victimPlayer.Team
+			and victimPlayer.Team.Name == CRITIC_TEAM and hum then
+
 			triggered = true
-			print("[HEELTRAP] " .. victimPlayer.Name .. " triggered the trap!")
+			print("[HEELTRAP] " .. victimPlayer.Name .. " tripped!")
 
 			SoundService.FireToAll("AbilityHit", trap.Position)
 
-			-- Stun
 			local oldSpeed = hum.WalkSpeed
-			hum.WalkSpeed = 0
-			hum.PlatformStand = true
+			hum.WalkSpeed      = 0
+			hum.PlatformStand  = true
 
-			-- Notify for showstopper charge
 			if _G.ShowstopperService then
 				_G.ShowstopperService.OnAbilityHit(player)
 			end
@@ -72,7 +87,7 @@ PlaceHeelTrap.OnServerEvent:Connect(function(player, trapPosition)
 
 			if hum then
 				hum.PlatformStand = false
-				hum.WalkSpeed = oldSpeed
+				hum.WalkSpeed     = oldSpeed
 				hum:ChangeState(Enum.HumanoidStateType.GettingUp)
 			end
 
@@ -81,4 +96,8 @@ PlaceHeelTrap.OnServerEvent:Connect(function(player, trapPosition)
 	end)
 
 	Debris:AddItem(trap, TRAP_LIFETIME)
+end)
+
+Players.PlayerRemoving:Connect(function(p)
+	lastUsed[p.UserId] = nil
 end)
