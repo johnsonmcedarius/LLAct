@@ -1,0 +1,307 @@
+-- MarketplaceHandler (Script in ServerScriptService)
+-- THE ONLY SCRIPT THAT SETS MarketplaceService.ProcessReceipt.
+-- Handles: coin packs, crate purchases, ability slots, gifts, bundles, gamepasses.
+-- Reads everything from MarketplaceRegistry - no IDs in this file.
+-- Load order: after DataManager and RemoteRegistry, before all gameplay scripts.
+
+local Players            = game:GetService("Players")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+-- Wait for dependencies
+print("[MARKETPLACE] Loading dependencies...")
+local Registry = require(ReplicatedStorage:WaitForChild("MarketplaceRegistry"))
+print("[MARKETPLACE] MarketplaceRegistry loaded.")
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+local function getRemote(name)
+	local r = Remotes:FindFirstChild(name)
+	if not r then r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes end
+	return r
+end
+
+local GiftReceived      = getRemote("GiftReceived")
+local AbilitySlotUnlock = getRemote("AbilitySlotUnlock")
+local GlobalAnnouncement = getRemote("GlobalAnnouncement")
+
+-- Pending gift targets: [senderUserId] = {targetUserId, productKey}
+local pendingGifts = {}
+
+-- ============================================================
+-- Helper: wait for DataManager to be ready
+-- ============================================================
+local function waitForDataManager()
+	local attempts = 0
+	while not _G.DataManager and attempts < 60 do
+		task.wait(0.5)
+		attempts += 1
+	end
+	if not _G.DataManager then
+		warn("[MARKETPLACE] DataManager not available after 30s.")
+	end
+	return _G.DataManager
+end
+
+-- ============================================================
+-- Gamepass ownership check on join
+-- Grants persistent perks for all owned gamepasses
+-- ============================================================
+local function applyGamepassPerks(player)
+	local dm = _G.DataManager
+	if not dm then return end
+
+	for passKey, pass in pairs(Registry.GamePasses) do
+		if pass.Id == 0 then continue end
+
+		local ok, owns = pcall(function()
+			return MarketplaceService:UserOwnsGamePassAsync(player.UserId, pass.Id)
+		end)
+
+		if not ok then
+			warn("[MARKETPLACE] Failed to check gamepass " .. passKey .. " for " .. player.Name)
+			continue
+		end
+
+		if not owns then continue end
+
+		local perks = pass.Perks or {}
+
+		-- VIP It Girl
+		if perks.IsVIP then
+			player:SetAttribute("IsVIP", true)
+
+			-- Auto-equip VIP Podium if they haven't chosen a custom one
+			local data = dm.GetData(player)
+			if data and data.Equipped then
+				if data.Equipped.Podium == "BasicPodium" and perks.AutoPodium then
+					dm.SetEquipped(player, "Podium", perks.AutoPodium)
+				end
+			end
+
+			-- Store coin bonus as attribute for AddCoins to read
+			if perks.CoinBonus then
+				player:SetAttribute("VIPCoinBonus", perks.CoinBonus)
+			end
+		end
+
+		-- Trust Fund (2x coins)
+		if perks.CoinsMultiplier then
+			player:SetAttribute("CoinsMultiplier", perks.CoinsMultiplier)
+		end
+
+		-- Trendsetter (2x XP)
+		if perks.XPMultiplier then
+			player:SetAttribute("XPMultiplier", perks.XPMultiplier)
+		end
+
+		-- Ability slots
+		if perks.AbilitySlot then
+			if _G.AbilitySlotService then
+				-- AbilitySlotService reads this attribute on startup
+				local current = player:GetAttribute("UnlockedAbilitySlots") or 1
+				if perks.AbilitySlot > current then
+					player:SetAttribute("UnlockedAbilitySlots", perks.AbilitySlot)
+				end
+			end
+		end
+	end
+
+	-- Also check bundle gamepasses
+	for bundleKey, bundle in pairs(Registry.Bundles) do
+		if bundle.Id == 0 then continue end
+
+		local ok, owns = pcall(function()
+			return MarketplaceService:UserOwnsGamePassAsync(player.UserId, bundle.Id)
+		end)
+		if ok and owns then
+			dm.UnlockBundle(player, bundleKey)
+		end
+	end
+
+	-- Check individual item gamepasses
+	for itemKey, item in pairs(Registry.Items) do
+		if item.Id == 0 then continue end
+
+		local ok, owns = pcall(function()
+			return MarketplaceService:UserOwnsGamePassAsync(player.UserId, item.Id)
+		end)
+		if ok and owns then
+			dm.GiveItem(player, item.Category, item.ItemName)
+		end
+	end
+
+	print("[MARKETPLACE] Gamepass perks applied for " .. player.Name)
+end
+
+-- ============================================================
+-- Roblox Plus / Subscription check
+-- ============================================================
+local function applySubscriptionPerks(player)
+	local subId = Registry.Subscription.SubscriptionId
+	if not subId or subId == "EXP-0000000000" then return end
+
+	local ok, status = pcall(function()
+		return MarketplaceService:GetUserSubscriptionStatusAsync(player, subId)
+	end)
+
+	if not ok then
+		warn("[MARKETPLACE] Subscription check failed for " .. player.Name)
+		return
+	end
+
+	if status and status.IsSubscribed then
+		player:SetAttribute("IsSubscribed", true)
+
+		-- Monthly coin grant (only once per session; real persistence needs DataManager check)
+		local dm = _G.DataManager
+		if dm then
+			local data = dm.GetData(player)
+			if data and not data.SubscriptionCoinGrantedThisMonth then
+				dm.AddCoins(player, Registry.Subscription.Perks.MonthlyCoins or 300)
+				data.SubscriptionCoinGrantedThisMonth = true
+				print("[MARKETPLACE] Subscription monthly coins granted to " .. player.Name)
+			end
+		end
+
+		print("[MARKETPLACE] " .. player.Name .. " is a Roblox Plus subscriber.")
+	end
+end
+
+-- ============================================================
+-- ProcessReceipt - THE ONLY ONE IN THE GAME
+-- Handles: coin packs, crates, ability slots, gift products
+-- ============================================================
+MarketplaceService.ProcessReceipt = function(receiptInfo)
+	local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
+	if not player then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	local dm = waitForDataManager()
+	if not dm then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	local productId = receiptInfo.ProductId
+
+	-- ---- Gift processing (check first) ----
+	if _G.GiftingService then
+		local handled = _G.GiftingService.ProcessGiftReceipt(receiptInfo)
+		if handled then
+			return Enum.ProductPurchaseDecision.PurchaseGranted
+		end
+	end
+
+	-- ---- Look up in Registry ----
+	local productEntry = Registry.GetProductById(productId)
+
+	if productEntry then
+		local reward = productEntry.Reward
+
+		-- Coin packs
+		if reward.Coins then
+			dm.AddCoins(player, reward.Coins)
+			print("[MARKETPLACE] " .. player.Name .. " bought " .. reward.Coins .. " coins.")
+			return Enum.ProductPurchaseDecision.PurchaseGranted
+		end
+
+		-- Crate purchase
+		if reward.Crate then
+			if _G.GachaService then
+				_G.GachaService.AddCrate(player, reward.Crate, reward.Amount or 1)
+			end
+			print("[MARKETPLACE] " .. player.Name .. " bought " .. reward.Crate)
+			return Enum.ProductPurchaseDecision.PurchaseGranted
+		end
+	end
+
+	-- ---- Ability Slot products (from GamePasses used as products) ----
+	-- Check if this product ID matches an ability slot gamepass
+	local passEntry = Registry.GetGamepassById(productId)
+	if passEntry and passEntry.Perks and passEntry.Perks.AbilitySlot then
+		local slot = passEntry.Perks.AbilitySlot
+		local current = player:GetAttribute("UnlockedAbilitySlots") or 1
+		if slot > current then
+			player:SetAttribute("UnlockedAbilitySlots", slot)
+			AbilitySlotUnlock:FireClient(player, slot)
+			print("[MARKETPLACE] " .. player.Name .. " unlocked ability slot " .. slot)
+		end
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+
+	warn("[MARKETPLACE] Unknown product ID: " .. tostring(productId))
+	return Enum.ProductPurchaseDecision.NotProcessedYet
+end
+
+-- ============================================================
+-- Gamepass purchase prompt handler (for gifting game passes)
+-- Roblox fires PromptGamePassPurchaseFinished on the client;
+-- the server detects ownership change on next join.
+-- For immediate grant on same session, we poll:
+-- ============================================================
+local function onGamepassPurchased(player, passId, purchased)
+	if not purchased then return end
+
+	local dm = _G.DataManager
+	if not dm then return end
+
+	-- Bundle?
+	local bundle = Registry.GetBundleById(passId)
+	if bundle then
+		dm.UnlockBundle(player, Registry.GetBundleKeyById and Registry.GetBundleKeyById(passId) or "")
+		GlobalAnnouncement:FireAllClients(player.Name .. " unlocked the " .. bundle.Name .. "!")
+		print("[MARKETPLACE] " .. player.Name .. " purchased bundle: " .. bundle.Name)
+		return
+	end
+
+	-- Individual item?
+	local item = Registry.GetItemById(passId)
+	if item then
+		dm.GiveItem(player, item.Category, item.ItemName)
+		print("[MARKETPLACE] " .. player.Name .. " purchased item: " .. item.Name)
+		return
+	end
+
+	-- Gamepass perk?
+	local pass = Registry.GetGamepassById(passId)
+	if pass then
+		applyGamepassPerks(player)
+		print("[MARKETPLACE] " .. player.Name .. " purchased gamepass: " .. pass.Name)
+	end
+end
+
+MarketplaceService.PromptGamePassPurchaseFinished:Connect(onGamepassPurchased)
+
+-- ============================================================
+-- Prompt subscription (Roblox Plus) from server
+-- Called by client via remote when player clicks "Subscribe"
+-- ============================================================
+local PromptSubscription = getRemote("PromptSubscription")
+PromptSubscription.OnServerEvent:Connect(function(player)
+	-- Subscription prompts must be initiated on the client via
+	-- MarketplaceService:PromptRobloxSubscriptionPurchase(player, subscriptionId)
+	-- We relay the subscription ID to the client for it to call.
+	local SubIdRemote = getRemote("SubscriptionIdRelay")
+	SubIdRemote:FireClient(player, Registry.Subscription.SubscriptionId)
+end)
+
+-- ============================================================
+-- Player lifecycle
+-- ============================================================
+local function onPlayerAdded(player)
+	task.wait(3)  -- Wait for DataManager profile to load
+	applyGamepassPerks(player)
+	applySubscriptionPerks(player)
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+for _, p in ipairs(Players:GetPlayers()) do
+	task.spawn(onPlayerAdded, p)
+end
+
+Players.PlayerRemoving:Connect(function(p)
+	pendingGifts[p.UserId] = nil
+end)
+
+print("[MARKETPLACE] MarketplaceHandler ready.")
