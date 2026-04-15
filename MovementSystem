@@ -1,48 +1,45 @@
--- MovementSystem (LocalScript in StarterCharacterScripts)
--- Phase 2.5 fix: DashCooldownUpdate now fires to SERVER (relayed back by DashCooldownRelay).
-
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local ContextActionService = game:GetService("ContextActionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Debris = game:GetService("Debris")
 
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
+-- Modules/Remotes 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
-
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-
--- Phase 2.5 fix: FireServer instead of FireClient
 local DashCooldownUpdate = Remotes:FindFirstChild("DashCooldownUpdate") or Instance.new("RemoteEvent", Remotes)
-DashCooldownUpdate.Name = "DashCooldownUpdate"
 
-local CloseDodgeRemote = Remotes:FindFirstChild("CloseDodgeCheck") or Instance.new("RemoteEvent", Remotes)
-CloseDodgeRemote.Name = "CloseDodgeCheck"
-
--- Speed
+-- Config
 local WALK_SPEED    = 16
 local SPRINT_SPEED  = 24
-local DASH_SPEED    = 80
-local DASH_DURATION = 0.18
-local DASH_COOLDOWN = 4.0
-local CLOSE_DODGE_RANGE = 8
+local DASH_SPEED    = 90 
+local DASH_DURATION = 0.22
+local DASH_COOLDOWN = 0.5
 
--- FOV
+-- Camera/FOV
 local NORMAL_FOV     = 70
 local SPRINT_FOV     = 80
 local DASH_FOV       = 95
-local FOV_TWEEN_TIME = 0.25
+local DASH_ROLL_INTENSITY = 5 
 
--- Bob
-local BOB_SPEED  = 14
-local BOB_AMOUNT = 0.15
-local bobTime    = 0
+-- Ghost Config
+local GHOST_COUNT = 7
+local GHOST_INTERVAL = 0.03
+local GHOST_LIFETIME = 0.5
 
--- Sprint anim
+-- Animation IDs
 local SPRINT_ANIMATION_ID = "rbxassetid://130150958024919"
+local DASH_ANIMS = {
+	Forward  = "rbxassetid://117382622603922",
+	Backward = "rbxassetid://126640575736027",
+	Left     = "rbxassetid://139408657874679",
+	Right    = "rbxassetid://129377801326400"
+}
 
 -- State
 local sprinting = false
@@ -50,115 +47,186 @@ local dashing   = false
 local dashCooldownUntil = 0
 local character, humanoid, root
 local sprintTrack
-local fovTween
+local dashTracks = {} 
+local currentRoll = 0
 local dustEmitter
+
+-------------------------------------------------
+-- Helpers
+-------------------------------------------------
 
 local function setupCharacter(char)
 	character = char
 	humanoid  = char:WaitForChild("Humanoid")
 	root      = char:WaitForChild("HumanoidRootPart")
-	humanoid.WalkSpeed   = WALK_SPEED
-	camera.FieldOfView   = NORMAL_FOV
 
-	local animator = humanoid:FindFirstChildOfClass("Animator")
-	if not animator then
-		animator = Instance.new("Animator")
-		animator.Parent = humanoid
-	end
+	local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
 
-	local anim = Instance.new("Animation")
-	anim.AnimationId = SPRINT_ANIMATION_ID
-	sprintTrack = animator:LoadAnimation(anim)
+	-- Pre-load Sprint
+	local sAnim = Instance.new("Animation")
+	sAnim.AnimationId = SPRINT_ANIMATION_ID
+	sprintTrack = animator:LoadAnimation(sAnim)
 	sprintTrack.Priority = Enum.AnimationPriority.Action
 
-	local att = Instance.new("Attachment")
-	att.Position = Vector3.new(0, -2.8, 0)
-	att.Parent   = root
+	-- Pre-load Dash Anims
+	for name, id in pairs(DASH_ANIMS) do
+		local anim = Instance.new("Animation")
+		anim.AnimationId = id
+		local track = animator:LoadAnimation(anim)
+		track.Priority = Enum.AnimationPriority.Action4 
+		track.Looped = false
+		dashTracks[name] = track
+	end
+
+	-- Create Sprint Dust (Strictly for sprinting)
+	local att = Instance.new("Attachment", root)
+	att.Position = Vector3.new(0, -2.5, 0)
 
 	dustEmitter = Instance.new("ParticleEmitter")
-	dustEmitter.Enabled  = false
-	dustEmitter.Texture  = "rbxasset://textures/particles/smoke_main.dds"
-	dustEmitter.Rate     = 35
-	dustEmitter.Lifetime = NumberRange.new(0.6, 1.2)
-	dustEmitter.Speed    = NumberRange.new(2, 4)
-	dustEmitter.SpreadAngle = Vector2.new(180, 180)
-	dustEmitter.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.8),
-		NumberSequenceKeypoint.new(1, 1.6),
-	})
-	dustEmitter.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.3),
-		NumberSequenceKeypoint.new(1, 1),
-	})
-	dustEmitter.Color  = ColorSequence.new(Color3.fromRGB(200, 150, 255))
+	dustEmitter.Enabled = false
+	dustEmitter.Texture = "rbxasset://textures/particles/smoke_main.dds"
+	dustEmitter.Rate = 40
+	dustEmitter.Lifetime = NumberRange.new(0.5, 1)
+	dustEmitter.Speed = NumberRange.new(3, 5)
+	dustEmitter.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 2)})
+	dustEmitter.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 1)})
+	dustEmitter.Color = ColorSequence.new(Color3.fromRGB(220, 220, 220))
 	dustEmitter.Parent = att
+
+	humanoid.WalkSpeed = WALK_SPEED
+	camera.FieldOfView = NORMAL_FOV
 end
 
 player.CharacterAdded:Connect(setupCharacter)
 if player.Character then setupCharacter(player.Character) end
 
-local function tweenFov(target)
-	if fovTween then fovTween:Cancel() end
-	fovTween = TweenService:Create(camera,
-		TweenInfo.new(FOV_TWEEN_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{FieldOfView = target})
-	fovTween:Play()
-end
+local function getDashDirection()
+	local move = humanoid.MoveDirection
+	if move.Magnitude == 0 then return "Forward", root.CFrame.LookVector, 0 end
 
-local function checkCloseDodge()
-	if not root then return end
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p ~= player and p.Team and p.Team.Name == "Critics" then
-			local cr = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-			if cr and (root.Position - cr.Position).Magnitude <= CLOSE_DODGE_RANGE then
-				CloseDodgeRemote:FireServer()
-				return
-			end
-		end
+	local localMove = root.CFrame:VectorToObjectSpace(move)
+
+	if math.abs(localMove.Z) > math.abs(localMove.X) then
+		if localMove.Z < 0 then return "Forward", move, 0 end
+		return "Backward", move, 0
+	else
+		if localMove.X < 0 then return "Left", move, -1 end
+		return "Right", move, 1
 	end
 end
 
+local function createGhost(i)
+	if not character then return end
+
+	-- Toggle Archivable to allow cloning
+	character.Archivable = true
+	local clone = character:Clone()
+	character.Archivable = false
+
+	if not clone then return end
+
+	-- Cleanup: Remove physics, scripts, and nameplates
+	for _, obj in ipairs(clone:GetDescendants()) do
+		if obj:IsA("LocalScript") or obj:IsA("Script") or obj:IsA("Humanoid") or obj:IsA("BillboardGui") then
+			obj:Destroy()
+		elseif obj:IsA("BasePart") then
+			obj.Anchored = true
+			obj.CanCollide = false
+			obj.CanTouch = false
+			obj.CanQuery = false
+			obj.CastShadow = false
+		end
+	end
+
+	local color = Color3.fromHSV(i / GHOST_COUNT, 0.8, 1)
+	local highlight = Instance.new("Highlight")
+	highlight.FillColor = color
+	highlight.OutlineColor = color
+	highlight.FillTransparency = 0.5
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Parent = clone
+
+	clone.Parent = workspace
+	Debris:AddItem(clone, GHOST_LIFETIME)
+
+	-- Fade Out Logic
+	task.spawn(function()
+		local startTime = os.clock()
+		while os.clock() - startTime < GHOST_LIFETIME do
+			local pct = (os.clock() - startTime) / GHOST_LIFETIME
+			if highlight.Parent then
+				highlight.FillTransparency = 0.5 + (pct * 0.5)
+				highlight.OutlineTransparency = pct
+			end
+			task.wait()
+		end
+	end)
+end
+
 local function performDash()
-	if not humanoid or not root then return end
-	if dashing then return end
+	if not humanoid or not root or dashing then return end
 	local now = os.clock()
 	if now < dashCooldownUntil then return end
 
 	dashing = true
 	dashCooldownUntil = now + DASH_COOLDOWN
-
-	-- Phase 2.5 fix: fire to SERVER so DashCooldownRelay sends it back to this client's HUD
 	DashCooldownUpdate:FireServer(DASH_COOLDOWN)
 
-	checkCloseDodge()
-	tweenFov(DASH_FOV)
-	humanoid.WalkSpeed = DASH_SPEED
+	-- Kill dust during dash for clean visuals
+	if dustEmitter then dustEmitter.Enabled = false end
 
-	if dustEmitter then
-		dustEmitter.Rate    = 120
-		dustEmitter.Enabled = true
-	end
+	local dirName, dashVector, tiltDir = getDashDirection()
 
+	-- Animation
+	local track = dashTracks[dirName]
+	if track then track:Play(0.1) end
+
+	-- Snappy Burst Movement
+	local dashVel = Instance.new("LinearVelocity")
+	local att = Instance.new("Attachment", root)
+	dashVel.MaxForce = 100000
+	dashVel.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+	dashVel.VectorVelocity = dashVector.Unit * DASH_SPEED
+	dashVel.Attachment0 = att
+	dashVel.Parent = root
+
+	-- Camera Roll & FOV Kick
+	currentRoll = -tiltDir * DASH_ROLL_INTENSITY
+	TweenService:Create(camera, TweenInfo.new(0.2), {FieldOfView = DASH_FOV}):Play()
+
+	-- Sound: Fashion Dash Rustle
 	SoundService.PlayLocal("FashionDash")
+
+	-- Spawn Rainbow Trail
+	task.spawn(function()
+		for i = 1, GHOST_COUNT do
+			createGhost(i)
+			task.wait(GHOST_INTERVAL)
+		end
+	end)
 
 	task.wait(DASH_DURATION)
 
-	if humanoid then
-		humanoid.WalkSpeed = sprinting and SPRINT_SPEED or WALK_SPEED
-	end
-	if dustEmitter then
-		dustEmitter.Rate    = 35
-		dustEmitter.Enabled = sprinting
-	end
+	-- Stop dash animation smoothly
+	if track then track:Stop(0.2) end
 
-	tweenFov(sprinting and SPRINT_FOV or NORMAL_FOV)
+	-- Reset Physics & Camera
+	dashVel:Destroy()
+	att:Destroy()
+	currentRoll = 0
+	TweenService:Create(camera, TweenInfo.new(0.3), {FieldOfView = sprinting and SPRINT_FOV or NORMAL_FOV}):Play()
+
 	dashing = false
 end
 
--- Input
+-------------------------------------------------
+-- Input & Loops
+-------------------------------------------------
+
 UIS.InputBegan:Connect(function(input, gp)
 	if gp then return end
-	if input.KeyCode == Enum.KeyCode.Q         then performDash() end
+	if input.KeyCode == Enum.KeyCode.Q then performDash() end
 	if input.KeyCode == Enum.KeyCode.LeftShift then sprinting = true end
 end)
 
@@ -166,36 +234,32 @@ UIS.InputEnded:Connect(function(input)
 	if input.KeyCode == Enum.KeyCode.LeftShift then sprinting = false end
 end)
 
-ContextActionService:BindAction("FashionDash",
-	function(_, state)
-		if state == Enum.UserInputState.Begin then performDash() end
-	end,
-	true, Enum.KeyCode.ButtonR1)
-
-local btn = ContextActionService:GetButton("FashionDash")
-if btn then
-	btn.Text = "DASH"
-	btn.BackgroundColor3 = Color3.fromRGB(180, 80, 255)
-end
+ContextActionService:BindAction("FashionDash", function(_, state)
+	if state == Enum.UserInputState.Begin then performDash() end
+end, true, Enum.KeyCode.ButtonR1)
 
 RunService.RenderStepped:Connect(function(dt)
 	if not humanoid or not root then return end
-	if dashing then return end
+
+	-- Apply Camera Roll Tilt
+	local rollCFrame = CFrame.Angles(0, 0, math.rad(currentRoll))
+	camera.CFrame = camera.CFrame * rollCFrame
+
+	-- Handle Sprinting/Walking logic when not dashing
+	if dashing then 
+		if dustEmitter then dustEmitter.Enabled = false end
+		return 
+	end
 
 	local moving = humanoid.MoveDirection.Magnitude > 0
 
 	if sprinting and moving then
 		humanoid.WalkSpeed = SPRINT_SPEED
-		tweenFov(SPRINT_FOV)
-		bobTime += dt * BOB_SPEED
-		camera.CFrame *= CFrame.new(0, math.sin(bobTime) * BOB_AMOUNT, 0)
-		if sprintTrack and not sprintTrack.IsPlaying then sprintTrack:Play() end
 		if dustEmitter then dustEmitter.Enabled = true end
+		if sprintTrack and not sprintTrack.IsPlaying then sprintTrack:Play() end
 	else
 		humanoid.WalkSpeed = WALK_SPEED
-		tweenFov(NORMAL_FOV)
-		bobTime = 0
-		if sprintTrack and sprintTrack.IsPlaying then sprintTrack:Stop() end
 		if dustEmitter then dustEmitter.Enabled = false end
+		if sprintTrack and sprintTrack.IsPlaying then sprintTrack:Stop() end
 	end
 end)
