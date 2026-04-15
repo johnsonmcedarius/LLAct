@@ -1,0 +1,213 @@
+-- ShopUIHelper (LocalScript in StarterPlayerScripts)
+-- Uses MarketplaceRegistry + GetProductInfo remote to show live Robux prices.
+-- Handles bundle availability window check.
+-- Prompts Roblox Plus subscription via PromptRobloxSubscriptionPurchase.
+-- You build the actual Shop UI frames; this script wires the backend logic.
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+local TweenService      = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+
+local Registry   = require(ReplicatedStorage:WaitForChild("MarketplaceRegistry"))
+local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+local function getRemote(name)
+	return Remotes:WaitForChild(name, 5)
+		or (function()
+			local r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes return r
+		end)()
+end
+
+local GetProductInfoRemote  = getRemote("GetProductInfo")
+local ProductInfoResult     = getRemote("ProductInfoResult")
+local PromptSubscription    = getRemote("PromptSubscription")
+local SubscriptionIdRelay   = getRemote("SubscriptionIdRelay")
+local GiftItem              = getRemote("GiftItem")
+local OpenCrate             = getRemote("OpenCrate")
+local BatchOpenCrate        = getRemote("BatchOpenCrate")
+local RedeemCode            = getRemote("RedeemCode")
+local CodeResult            = getRemote("CodeResult")
+
+-- Price cache: [assetId] = {Name, PriceInRobux, IsForSale}
+local priceCache = {}
+local pendingCallbacks = {}  -- [assetId] = {callback, ...}
+
+-------------------------------------------------
+-- Request live price from server
+-------------------------------------------------
+local function getLivePrice(assetId, infoType, callback)
+	if priceCache[assetId] then
+		callback(priceCache[assetId])
+		return
+	end
+
+	if not pendingCallbacks[assetId] then
+		pendingCallbacks[assetId] = {}
+		GetProductInfoRemote:FireServer(assetId, infoType or Enum.InfoType.Product)
+	end
+
+	table.insert(pendingCallbacks[assetId], callback)
+end
+
+ProductInfoResult.OnClientEvent:Connect(function(assetId, info)
+	priceCache[assetId] = info
+
+	local callbacks = pendingCallbacks[assetId]
+	pendingCallbacks[assetId] = nil
+
+	if callbacks then
+		for _, cb in ipairs(callbacks) do
+			cb(info)
+		end
+	end
+end)
+
+-------------------------------------------------
+-- Populate shop buttons with live prices
+-- Call this on any shop button that displays a Robux price.
+-- Example: ShopUIHelper.SetButtonPrice(button, productId)
+-------------------------------------------------
+local ShopUIHelper = {}
+
+function ShopUIHelper.SetButtonPrice(button, assetId, infoType)
+	if not button then return end
+	local priceLabel = button:FindFirstChild("PriceLabel")
+	if not priceLabel then return end
+
+	priceLabel.Text = "Loading..."
+
+	getLivePrice(assetId, infoType, function(info)
+		if info and info.IsForSale then
+			priceLabel.Text = info.PriceInRobux .. " R$"
+		else
+			priceLabel.Text = "Unavailable"
+			button.Active   = false
+		end
+	end)
+end
+
+-------------------------------------------------
+-- Bundle availability display
+-- Shows/hides a shop item based on limited-time window
+-------------------------------------------------
+function ShopUIHelper.UpdateBundleVisibility(bundleKey, container)
+	if not container then return end
+	local isActive = Registry.IsBundleActive(bundleKey)
+	container.Visible = isActive
+
+	if isActive then
+		local bundle = Registry.Bundles[bundleKey]
+		if bundle and bundle.EndTime and bundle.EndTime > 0 then
+			-- Show countdown
+			local timeLabel = container:FindFirstChild("TimerLabel")
+			if timeLabel then
+				local remaining = bundle.EndTime - os.time()
+				local days = math.floor(remaining / 86400)
+				timeLabel.Text = "Ends in " .. days .. " day(s)"
+			end
+		end
+	end
+end
+
+-------------------------------------------------
+-- Prompt product purchase (Robux developer product)
+-------------------------------------------------
+function ShopUIHelper.BuyProduct(productId)
+	if type(productId) ~= "number" or productId == 0 then
+		warn("[SHOP] Invalid product ID.")
+		return
+	end
+	MarketplaceService:PromptProductPurchase(player, productId)
+end
+
+-------------------------------------------------
+-- Prompt gamepass purchase
+-------------------------------------------------
+function ShopUIHelper.BuyGamepass(passId)
+	if type(passId) ~= "number" or passId == 0 then
+		warn("[SHOP] Invalid gamepass ID.")
+		return
+	end
+	MarketplaceService:PromptGamePassPurchase(player, passId)
+end
+
+-------------------------------------------------
+-- Roblox Plus subscription prompt
+-- Fires server to get the subscription ID, then prompts on client
+-------------------------------------------------
+function ShopUIHelper.PromptSubscription()
+	PromptSubscription:FireServer()
+end
+
+SubscriptionIdRelay.OnClientEvent:Connect(function(subscriptionId)
+	if not subscriptionId or subscriptionId == "EXP-0000000000" then
+		warn("[SHOP] Subscription ID not set yet.")
+		return
+	end
+
+	local ok, err = pcall(function()
+		MarketplaceService:PromptRobloxSubscriptionPurchase(player, subscriptionId)
+	end)
+	if not ok then
+		warn("[SHOP] PromptRobloxSubscriptionPurchase failed: " .. tostring(err))
+	end
+end)
+
+-------------------------------------------------
+-- Gift an item to another player
+-- targetUserId: number, itemType: "CoinDesignerCrate" | "RobuxDesignerCrate"
+-------------------------------------------------
+function ShopUIHelper.GiftTo(targetUserId, itemType)
+	if type(targetUserId) ~= "number" then return end
+	GiftItem:FireServer(targetUserId, itemType)
+end
+
+-------------------------------------------------
+-- Open crates
+-------------------------------------------------
+function ShopUIHelper.OpenCrate(crateType, count)
+	count = count or 1
+	count = math.clamp(count, 1, 10)
+	if count == 1 then
+		OpenCrate:FireServer(crateType)
+	else
+		BatchOpenCrate:FireServer(crateType, count)
+	end
+end
+
+-------------------------------------------------
+-- Redeem a code
+-------------------------------------------------
+function ShopUIHelper.RedeemCode(code)
+	if type(code) ~= "string" or #code == 0 then return end
+	RedeemCode:FireServer(code)
+end
+
+CodeResult.OnClientEvent:Connect(function(success, message)
+	-- Wire this to your custom code result UI
+	print("[SHOP] Code result: " .. (success and "SUCCESS" or "FAIL") .. " - " .. message)
+	-- Example: find a CodeResultLabel in your UI and set its text
+	local screenGui = player.PlayerGui:FindFirstChild("GameHUD")
+	if screenGui then
+		local label = screenGui:FindFirstChild("CodeResultLabel", true)
+		if label then
+			label.Text      = message
+			label.TextColor3 = success
+				and Color3.fromRGB(100, 255, 100)
+				or  Color3.fromRGB(255, 100, 100)
+			label.Visible   = true
+			task.delay(3, function() label.Visible = false end)
+		end
+	end
+end)
+
+-------------------------------------------------
+-- Expose to other scripts (e.g. your Shop UI button scripts)
+-------------------------------------------------
+_G.ShopUIHelper = ShopUIHelper
+return ShopUIHelper
