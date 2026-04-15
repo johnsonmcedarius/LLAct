@@ -1,51 +1,52 @@
 -- HighHeelTrapHandler (Script in ServerScriptService)
--- Phase 4 fix: server-side lastUsed cooldown so exploiters can't spam PlaceHeelTrap.
+-- Phase 6: AbilityImmunity.TryHit() check before applying stun.
+-- Diminishing returns reduce stun duration on successive hits.
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris            = game:GetService("Debris")
 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
-
 local Remotes      = ReplicatedStorage:WaitForChild("Remotes")
-local PlaceHeelTrap = Remotes:WaitForChild("PlaceHeelTrap")
 
-local STUN_DURATION   = 3
-local TRAP_LIFETIME   = 10
-local SERVER_COOLDOWN = 10   -- Must match client cooldown. Server enforces this.
-local MAX_DISTANCE    = 20
-local DESIGNER_TEAM   = "Designers"
-local CRITIC_TEAM     = "Critics"
+local function getRemote(name)
+	local r = Remotes:FindFirstChild(name)
+	if not r then r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes end
+	return r
+end
 
--- SERVER-SIDE cooldown table (exploiter-proof)
-local lastUsed = {}  -- [userId] = os.clock()
+local PlaceHeelTrap = getRemote("PlaceHeelTrap")
+
+local BASE_STUN_DURATION = 3.0    -- seconds at full effect
+local TRAP_LIFETIME      = 10
+local SERVER_COOLDOWN    = 10
+local MAX_DISTANCE       = 20
+local DESIGNER_TEAM      = "Designers"
+local CRITIC_TEAM        = "Critics"
+
+local lastUsed = {}
 
 PlaceHeelTrap.OnServerEvent:Connect(function(player, trapPosition)
 	if not (player.Team and player.Team.Name == DESIGNER_TEAM) then return end
 
-	-- Server-side cooldown check
-	local now     = os.clock()
-	local lastTime = lastUsed[player.UserId] or 0
-	if now - lastTime < SERVER_COOLDOWN then
-		warn("[EXPLOIT] " .. player.Name .. " fired PlaceHeelTrap before cooldown expired.")
+	local now = os.clock()
+	if now - (lastUsed[player.UserId] or 0) < SERVER_COOLDOWN then
+		warn("[EXPLOIT] " .. player.Name .. " PlaceHeelTrap before cooldown.")
 		return
 	end
 	lastUsed[player.UserId] = now
 
-	-- Distance check
 	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 	if not root then return end
+	if typeof(trapPosition) ~= "Vector3" then return end
 	if (root.Position - trapPosition).Magnitude > MAX_DISTANCE then
-		warn("[EXPLOIT] " .. player.Name .. " trap placement too far.")
+		warn("[EXPLOIT] " .. player.Name .. " trap too far.")
 		return
 	end
 
-	-- Validate position type
-	if typeof(trapPosition) ~= "Vector3" then return end
-
 	print("[HEELTRAP] " .. player.Name .. " placed trap.")
 
-	local trap        = Instance.new("Part")
+	local trap = Instance.new("Part")
 	trap.Name         = "HighHeelTrap"
 	trap.Size         = Vector3.new(4, 0.5, 4)
 	trap.CFrame       = CFrame.new(trapPosition)
@@ -67,32 +68,42 @@ PlaceHeelTrap.OnServerEvent:Connect(function(player, trapPosition)
 		local victimPlayer = Players:GetPlayerFromCharacter(victimChar)
 		local hum          = victimChar:FindFirstChildOfClass("Humanoid")
 
-		if victimPlayer and victimPlayer.Team
-			and victimPlayer.Team.Name == CRITIC_TEAM and hum then
+		if not (victimPlayer and victimPlayer.Team
+			and victimPlayer.Team.Name == CRITIC_TEAM and hum) then return end
 
-			triggered = true
-			print("[HEELTRAP] " .. victimPlayer.Name .. " tripped!")
+		-- ── Immunity check (Phase 6) ──
+		local multiplier = _G.AbilityImmunity and _G.AbilityImmunity.TryHit(victimPlayer)
+		if not multiplier then return end
 
-			SoundService.FireToAll("AbilityHit", trap.Position)
+		triggered = true
 
-			local oldSpeed = hum.WalkSpeed
-			hum.WalkSpeed      = 0
-			hum.PlatformStand  = true
+		local stunDuration = BASE_STUN_DURATION * multiplier
 
-			if _G.ShowstopperService then
-				_G.ShowstopperService.OnAbilityHit(player)
-			end
+		print("[HEELTRAP] " .. victimPlayer.Name .. " stunned for "
+			.. string.format("%.1f", stunDuration) .. "s (x" .. string.format("%.2f", multiplier) .. ")")
 
-			task.wait(STUN_DURATION)
+		SoundService.FireToAll("AbilityHit", trap.Position)
 
-			if hum then
-				hum.PlatformStand = false
-				hum.WalkSpeed     = oldSpeed
-				hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-			end
+		local oldSpeed = hum.WalkSpeed
+		hum.WalkSpeed     = 0
+		hum.PlatformStand = true
 
-			Debris:AddItem(trap, 0.1)
+		if _G.ShowstopperService then
+			_G.ShowstopperService.OnAbilityHit(player)
 		end
+		if _G.DailyLookbook then
+			_G.DailyLookbook.AddProgress(player, "Stuns", 1)
+		end
+
+		task.wait(stunDuration)
+
+		if hum then
+			hum.PlatformStand = false
+			hum.WalkSpeed     = oldSpeed
+			hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+		end
+
+		Debris:AddItem(trap, 0.1)
 	end)
 
 	Debris:AddItem(trap, TRAP_LIFETIME)
