@@ -1,5 +1,6 @@
 -- HairsprayExplosionHandler (Script in ServerScriptService)
--- Phase 4 fix: server-side lastUsed cooldown, name-before-parent remotes.
+-- Phase 6: AbilityImmunity.TryHit() check before applying slow.
+-- Diminishing returns reduce slow duration on successive hits.
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -9,11 +10,7 @@ local Remotes      = ReplicatedStorage:WaitForChild("Remotes")
 
 local function getRemote(name)
 	local r = Remotes:FindFirstChild(name)
-	if not r then
-		r        = Instance.new("RemoteEvent")  -- name BEFORE parent
-		r.Name   = name
-		r.Parent = Remotes
-	end
+	if not r then r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes end
 	return r
 end
 
@@ -23,20 +20,19 @@ local HUDCooldownUpdate     = getRemote("HUDCooldownUpdate")
 local AbilityCooldownUpdate = getRemote("AbilityCooldownUpdate")
 local CameraShake           = getRemote("CameraShake")
 
-local SERVER_COOLDOWN  = 8    -- Must match client COOLDOWN
-local MAX_ORIGIN_DIST  = 80
-local MAX_RADIUS       = 25
-local DESIGNER_TEAM    = "Designers"
-local CRITIC_TEAM      = "Critics"
+local SERVER_COOLDOWN   = 8
+local MAX_ORIGIN_DIST   = 80
+local MAX_RADIUS        = 25
+local BASE_SLOW_DURATION = 5.0    -- seconds at full effect (no diminishing returns)
+local DESIGNER_TEAM     = "Designers"
+local CRITIC_TEAM       = "Critics"
 
--- Server-side cooldown tables
-local lastUsedHairspray  = {}   -- [userId] = os.clock()
-local lastUsedCooldownFwd = {}  -- [userId] = os.clock() for AbilityCooldownUpdate
+local lastUsedHairspray   = {}
+local lastUsedCooldownFwd = {}
 
--- Forward ability cooldown signals to HUD (with server-side rate limit)
 AbilityCooldownUpdate.OnServerEvent:Connect(function(player, abilityName, duration)
 	local now = os.clock()
-	local key = player.UserId .. abilityName
+	local key = player.UserId .. tostring(abilityName)
 	if lastUsedCooldownFwd[key] and now - lastUsedCooldownFwd[key] < 1 then return end
 	lastUsedCooldownFwd[key] = now
 
@@ -46,23 +42,19 @@ AbilityCooldownUpdate.OnServerEvent:Connect(function(player, abilityName, durati
 	HUDCooldownUpdate:FireClient(player, abilityName, duration)
 end)
 
--- Explosion handler
 HairsprayExplode.OnServerEvent:Connect(function(player, explosionPos, radius)
 	if not (player.Team and player.Team.Name == DESIGNER_TEAM) then return end
 
-	-- Server-side cooldown
 	local now = os.clock()
 	if now - (lastUsedHairspray[player.UserId] or 0) < SERVER_COOLDOWN then
-		warn("[EXPLOIT] " .. player.Name .. " fired HairsprayExplode before cooldown.")
+		warn("[EXPLOIT] " .. player.Name .. " HairsprayExplode before cooldown.")
 		return
 	end
 	lastUsedHairspray[player.UserId] = now
 
-	-- Validate types
 	if typeof(explosionPos) ~= "Vector3" then return end
 	if type(radius) ~= "number" then return end
 
-	-- Distance check
 	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 	if not root then return end
 	if (root.Position - explosionPos).Magnitude > MAX_ORIGIN_DIST then
@@ -86,23 +78,32 @@ HairsprayExplode.OnServerEvent:Connect(function(player, explosionPos, radius)
 
 		if (pRoot.Position - explosionPos).Magnitude > radius then continue end
 
+		-- ── Immunity check (Phase 6) ──
+		local multiplier = _G.AbilityImmunity and _G.AbilityImmunity.TryHit(p)
+		if not multiplier then continue end   -- immune or service not loaded
+
 		if not hum:GetAttribute("IsSlowed") then
 			hitAnyone = true
 			hum:SetAttribute("IsSlowed", true)
 
-			local originalSpeed = hum.WalkSpeed
+			local originalSpeed  = hum.WalkSpeed
+			local slowDuration   = BASE_SLOW_DURATION * multiplier
+
 			hum.WalkSpeed = originalSpeed * 0.5
 
 			CameraShake:FireClient(p)
 			SoundService.FireToClient(p, "StunShake")
 			SoundService.FireToAll("AbilityHit", pRoot.Position)
 
-			task.delay(5, function()
+			task.delay(slowDuration, function()
 				if hum then
 					hum.WalkSpeed = originalSpeed
 					hum:SetAttribute("IsSlowed", nil)
 				end
 			end)
+
+			print("[HAIRSPRAY] " .. p.Name .. " slowed for "
+				.. string.format("%.1f", slowDuration) .. "s (x" .. string.format("%.2f", multiplier) .. ")")
 		end
 	end
 
@@ -112,6 +113,11 @@ HairsprayExplode.OnServerEvent:Connect(function(player, explosionPos, radius)
 
 	if hitAnyone and _G.ShowstopperService then
 		_G.ShowstopperService.OnAbilityHit(player)
+	end
+
+	-- Daily Lookbook
+	if hitAnyone and _G.DailyLookbook then
+		_G.DailyLookbook.AddProgress(player, "Stuns", 1)
 	end
 end)
 
