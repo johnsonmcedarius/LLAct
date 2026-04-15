@@ -1,13 +1,10 @@
 -- AbilitySlotService (Script in ServerScriptService)
--- Slot 1: free for all players.
--- Slot 2: 149 Robux (Developer Product).
--- Slot 3: 149 Robux (Developer Product).
--- Spinning an ability costs Coins and randomly selects from a rarity-weighted pool.
--- Players cycle through selected abilities via AbilitySlotController on the client.
+-- Phase 5: ProcessReceipt REMOVED. MarketplaceHandler owns it.
+-- Slot unlock now driven by player attribute "UnlockedAbilitySlots"
+-- set by MarketplaceHandler when gamepass is detected.
 
-local Players            = game:GetService("Players")
-local ReplicatedStorage  = game:GetService("ReplicatedStorage")
-local MarketplaceService = game:GetService("MarketplaceService")
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
@@ -17,41 +14,34 @@ local function getRemote(name)
 	return r
 end
 
-local AbilitySlotUnlock = getRemote("AbilitySlotUnlock")
-local SpinAbility       = getRemote("SpinAbility")
+local AbilitySlotUnlock  = getRemote("AbilitySlotUnlock")
+local SpinAbility        = getRemote("SpinAbility")
 local UpdateAbilitySlots = getRemote("UpdateAbilitySlots")
-if not UpdateAbilitySlots then
-	UpdateAbilitySlots = Instance.new("RemoteEvent")
-	UpdateAbilitySlots.Name = "UpdateAbilitySlots"
-	UpdateAbilitySlots.Parent = Remotes
-end
 
--- Product IDs (replace with real ones)
-local SLOT2_PRODUCT_ID = 0  -- 149 Robux
-local SLOT3_PRODUCT_ID = 0  -- 149 Robux
-local SPIN_COST        = 100 -- Coins per spin
+local SPIN_COST = 100  -- Coins per spin
 
--- Ability pool with rarity weights
 local AbilityPool = {
-	{Name = "Hairspray Bomb",   Rarity = "Common",    Weight = 50},
-	{Name = "Camera Flash",     Rarity = "Common",    Weight = 50},
-	{Name = "High Heel Trap",   Rarity = "Common",    Weight = 50},
-	{Name = "Double Spray",     Rarity = "Rare",      Weight = 25},  -- Placeholder
-	{Name = "Chain Flash",      Rarity = "Rare",      Weight = 25},  -- Placeholder
-	{Name = "Heel Storm",       Rarity = "Epic",      Weight = 10},  -- Placeholder
-	{Name = "Fashion Surge",    Rarity = "Epic",      Weight = 10},  -- Placeholder
-	{Name = "The Takedown",     Rarity = "Legendary", Weight = 4},   -- Placeholder
-	{Name = "Style Shock",      Rarity = "Mythic",    Weight = 1},   -- Placeholder
+	{Name = "Hairspray Bomb",    Rarity = "Common",    Weight = 50},
+	{Name = "Camera Flash",      Rarity = "Common",    Weight = 50},
+	{Name = "High Heel Trap",    Rarity = "Common",    Weight = 50},
+	{Name = "Double Spray",      Rarity = "Rare",      Weight = 25},
+	{Name = "Chain Flash",       Rarity = "Rare",      Weight = 25},
+	{Name = "Heel Storm",        Rarity = "Epic",      Weight = 10},
+	{Name = "Fashion Surge",     Rarity = "Epic",      Weight = 10},
+	{Name = "The Takedown",      Rarity = "Legendary", Weight = 4},
+	{Name = "Style Shock",       Rarity = "Mythic",    Weight = 1},
 }
 
--- Per-player slot data: [userId] = {slots = {"AbilityName", nil, nil}, unlockedSlots = 1}
+-- Per-player slot data
 local slotData = {}
 
 local function getSlots(player)
 	if not slotData[player.UserId] then
+		-- Read unlocked count from attribute (set by MarketplaceHandler)
+		local unlocked = player:GetAttribute("UnlockedAbilitySlots") or 1
 		slotData[player.UserId] = {
-			slots         = {nil, nil, nil},  -- 3 slot capacity
-			unlockedSlots = 1,
+			slots         = {nil, nil, nil},
+			unlockedSlots = unlocked,
 		}
 	end
 	return slotData[player.UserId]
@@ -62,22 +52,32 @@ local function syncToClient(player)
 	UpdateAbilitySlots:FireClient(player, data.slots, data.unlockedSlots)
 end
 
--------------------------------------------------
--- Weighted spin
--------------------------------------------------
+-- Re-sync when MarketplaceHandler unlocks a new slot
+local function onUnlockedSlotsChanged(player)
+	local unlocked = player:GetAttribute("UnlockedAbilitySlots") or 1
+	local data = getSlots(player)
+	if unlocked > data.unlockedSlots then
+		data.unlockedSlots = unlocked
+		syncToClient(player)
+		AbilitySlotUnlock:FireClient(player, unlocked)
+		print("[ABILITY] " .. player.Name .. " slot " .. unlocked .. " now active.")
+	end
+end
+
+local function watchPlayer(player)
+	player:GetAttributeChangedSignal("UnlockedAbilitySlots"):Connect(function()
+		onUnlockedSlotsChanged(player)
+	end)
+end
+
 local function spinAbility()
 	local weighted = {}
 	for _, ability in ipairs(AbilityPool) do
-		for _ = 1, ability.Weight do
-			table.insert(weighted, ability)
-		end
+		for _ = 1, ability.Weight do table.insert(weighted, ability) end
 	end
 	return weighted[math.random(#weighted)]
 end
 
--------------------------------------------------
--- Spin handler
--------------------------------------------------
 SpinAbility.OnServerEvent:Connect(function(player, slotIndex)
 	if type(slotIndex) ~= "number" then return end
 	slotIndex = math.clamp(math.floor(slotIndex), 1, 3)
@@ -85,11 +85,10 @@ SpinAbility.OnServerEvent:Connect(function(player, slotIndex)
 	local data = getSlots(player)
 
 	if slotIndex > data.unlockedSlots then
-		print("[ABILITY] " .. player.Name .. " slot " .. slotIndex .. " not unlocked.")
+		print("[ABILITY] " .. player.Name .. " slot " .. slotIndex .. " locked.")
 		return
 	end
 
-	-- Deduct coins
 	if not _G.DataManager then return end
 	local coins = _G.DataManager.GetCoins(player)
 	if coins < SPIN_COST then
@@ -101,48 +100,17 @@ SpinAbility.OnServerEvent:Connect(function(player, slotIndex)
 	local result = spinAbility()
 	data.slots[slotIndex] = result.Name
 
-	print("[ABILITY] " .. player.Name .. " slot " .. slotIndex .. " -> " .. result.Name .. " (" .. result.Rarity .. ")")
-
+	print("[ABILITY] " .. player.Name .. " slot " .. slotIndex .. " -> " .. result.Name)
 	syncToClient(player)
 
-	-- Notify client of spin result for UI animation
-	local SpinResult = Remotes:FindFirstChild("AbilitySpinResult") or (function()
-		local r = Instance.new("RemoteEvent") r.Name = "AbilitySpinResult" r.Parent = Remotes return r
-	end)()
+	local SpinResult = getRemote("AbilitySpinResult")
 	SpinResult:FireClient(player, slotIndex, result)
+
+	if _G.DailyLookbook then
+		_G.DailyLookbook.AddProgress(player, "Dashes", 1)
+	end
 end)
 
--------------------------------------------------
--- Slot unlock via Robux
--------------------------------------------------
-local function processReceipt(receiptInfo)
-	local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
-	if not player then return Enum.ProductPurchaseDecision.NotProcessedYet end
-
-	local pid = receiptInfo.ProductId
-
-	if pid == SLOT2_PRODUCT_ID or pid == SLOT3_PRODUCT_ID then
-		local data  = getSlots(player)
-		local target = (pid == SLOT2_PRODUCT_ID) and 2 or 3
-
-		if data.unlockedSlots >= target then
-			print("[ABILITY] " .. player.Name .. " already has slot " .. target)
-		else
-			data.unlockedSlots = target
-			print("[ABILITY] " .. player.Name .. " unlocked ability slot " .. target)
-			syncToClient(player)
-			AbilitySlotUnlock:FireClient(player, target)
-		end
-	end
-
-	return Enum.ProductPurchaseDecision.PurchaseGranted
-end
-
-MarketplaceService.ProcessReceipt = processReceipt
-
--------------------------------------------------
--- Expose for other scripts
--------------------------------------------------
 _G.AbilitySlotService = {
 	GetSlots = function(player)
 		return getSlots(player).slots
@@ -150,12 +118,19 @@ _G.AbilitySlotService = {
 }
 
 Players.PlayerAdded:Connect(function(player)
-	-- Load slot data from DataManager if saved
-	task.wait(2)  -- Wait for DataManager to load profile
+	task.wait(3)
+	watchPlayer(player)
 	syncToClient(player)
 end)
 
+for _, p in ipairs(Players:GetPlayers()) do
+	watchPlayer(p)
+	task.spawn(function()
+		task.wait(3)
+		syncToClient(p)
+	end)
+end
+
 Players.PlayerRemoving:Connect(function(p)
-	-- Optionally persist slots via DataManager here
 	slotData[p.UserId] = nil
 end)
