@@ -1,39 +1,30 @@
 -- FabricPassSystem (Script in ServerScriptService)
--- Hot potato passing. Sets "IsPassing" attribute on character during hand-off
--- so TagManager can detect and reward Intercept Pass bonus.
--- Also awards showstopper charge to both passer and receiver.
+-- Phase 5: DailyLookbook.AddProgress wired on successful pass.
 
-local Players = game:GetService("Players")
+local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Teams = game:GetService("Teams")
-local Debris = game:GetService("Debris")
 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
-local PassFabric = Remotes:FindFirstChild("PassFabric") or Instance.new("RemoteEvent", Remotes)
-PassFabric.Name = "PassFabric"
+local function getRemote(name)
+	local r = Remotes:FindFirstChild(name)
+	if not r then r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes end
+	return r
+end
 
-local PlayPoofVFX = Remotes:FindFirstChild("PlayPoofVFX") or Instance.new("RemoteEvent", Remotes)
-PlayPoofVFX.Name = "PlayPoofVFX"
+local PassFabric        = getRemote("PassFabric")
+local PlayPoofVFX       = getRemote("PlayPoofVFX")
+local SetTeammateGlow   = getRemote("SetTeammateGlow")
+local ShowRewardPopup   = getRemote("ShowRewardPopup")
 
-local SetTeammateGlow = Remotes:FindFirstChild("SetTeammateGlow") or Instance.new("RemoteEvent", Remotes)
-SetTeammateGlow.Name = "SetTeammateGlow"
-
-local ShowRewardPopup = Remotes:FindFirstChild("ShowRewardPopup") or Instance.new("RemoteEvent", Remotes)
-ShowRewardPopup.Name = "ShowRewardPopup"
-
-local PASS_RANGE = 15
-local DESIGNER_TEAM = "Designers"
-local SCAN_INTERVAL = 0.3
-local IS_PASSING_DURATION = 0.5 -- seconds the IsPassing flag is active
+local PASS_RANGE     = 15
+local DESIGNER_TEAM  = "Designers"
+local SCAN_INTERVAL  = 0.3
+local IS_PASSING_DUR = 0.5
 
 local passPrompts = {}
-
--------------------------------------------------
--- Helpers
--------------------------------------------------
 
 local function getFabricTool(player)
 	return (player.Character and player.Character:FindFirstChild("FBRoll"))
@@ -45,93 +36,73 @@ local function getRoot(player)
 end
 
 local function getTeammatesInRange(holder, range)
-	local holderRoot = getRoot(holder)
-	if not holderRoot then return {} end
+	local hr = getRoot(holder)
+	if not hr then return {} end
 	local nearby = {}
 	for _, p in ipairs(Players:GetPlayers()) do
-		if p ~= holder and p.Team and p.Team.Name == DESIGNER_TEAM then
-			local pRoot = getRoot(p)
-			if pRoot and (holderRoot.Position - pRoot.Position).Magnitude <= range then
-				table.insert(nearby, p)
-			end
+		if p == holder then continue end
+		if not (p.Team and p.Team.Name == DESIGNER_TEAM) then continue end
+		local pr = getRoot(p)
+		if pr and (hr.Position - pr.Position).Magnitude <= range then
+			table.insert(nearby, p)
 		end
 	end
 	return nearby
 end
 
--------------------------------------------------
--- Pass logic (server-authoritative)
--------------------------------------------------
 PassFabric.OnServerEvent:Connect(function(holder, targetPlayer)
 	if not (holder.Team and holder.Team.Name == DESIGNER_TEAM) then return end
 	if not (targetPlayer and targetPlayer.Team and targetPlayer.Team.Name == DESIGNER_TEAM) then return end
 	if holder == targetPlayer then return end
 
 	local fabricTool = getFabricTool(holder)
-	if not fabricTool then
-		print("[PASS] " .. holder.Name .. " has no fabric to pass.")
+	if not fabricTool then return end
+
+	local hr = getRoot(holder)
+	local tr = getRoot(targetPlayer)
+	if not hr or not tr then return end
+
+	if (hr.Position - tr.Position).Magnitude > PASS_RANGE + 5 then
+		warn("[PASS] Distance exploit by " .. holder.Name)
 		return
 	end
 
-	local holderRoot = getRoot(holder)
-	local targetRoot = getRoot(targetPlayer)
-	if not holderRoot or not targetRoot then return end
-
-	if (holderRoot.Position - targetRoot.Position).Magnitude > PASS_RANGE + 5 then
-		warn("[EXPLOIT] Pass distance exploit by " .. holder.Name)
-		return
-	end
-
-	if getFabricTool(targetPlayer) then
-		print("[PASS] " .. targetPlayer.Name .. " already has fabric.")
-		return
-	end
+	if getFabricTool(targetPlayer) then return end
 
 	print("[PASS] " .. holder.Name .. " -> " .. targetPlayer.Name)
 
-	-- Set IsPassing flag so TagManager can detect intercept
+	-- IsPassing flag for intercept detection
 	if holder.Character then
 		holder.Character:SetAttribute("IsPassing", true)
-		task.delay(IS_PASSING_DURATION, function()
-			if holder.Character then
-				holder.Character:SetAttribute("IsPassing", nil)
-			end
+		task.delay(IS_PASSING_DUR, function()
+			if holder.Character then holder.Character:SetAttribute("IsPassing", nil) end
 		end)
 	end
 
-	-- Poof at holder
-	PlayPoofVFX:FireAllClients(holderRoot.Position)
-	SoundService.FireToAll("FabricPass", holderRoot.Position)
+	PlayPoofVFX:FireAllClients(hr.Position)
+	SoundService.FireToAll("FabricPass", hr.Position)
 
-	-- Move tool
 	fabricTool.Parent = targetPlayer.Backpack
 
-	-- Poof at target
 	task.wait(0.1)
-	if targetRoot then
-		PlayPoofVFX:FireAllClients(targetRoot.Position)
-	end
+	if tr then PlayPoofVFX:FireAllClients(tr.Position) end
 
 	-- Showstopper charge for both
 	if _G.ShowstopperService then
 		_G.ShowstopperService.OnFabricPass(holder, targetPlayer)
 	end
 
-	-- Reward pop-ups
-	ShowRewardPopup:FireClient(holder, "+10 Showstopper", "")
+	-- Daily Lookbook: both players get credit for the pass
+	if _G.DailyLookbook then
+		_G.DailyLookbook.AddProgress(holder,       "Passes", 1)
+		_G.DailyLookbook.AddProgress(targetPlayer, "Passes", 1)
+	end
+
+	ShowRewardPopup:FireClient(holder,       "+10 Showstopper", "")
 	ShowRewardPopup:FireClient(targetPlayer, "+10 Showstopper", "")
 end)
 
--------------------------------------------------
--- Intercept detection: called from TagManager when a critic freezes a designer
--- If the designer's character has IsPassing = true, award Intercept bonus
--------------------------------------------------
--- (TagManager checks character:GetAttribute("IsPassing") before calling
---  ShowstopperService.OnInterceptPass(critic))
-
--------------------------------------------------
--- Continuous scan: pass prompts and glow
--------------------------------------------------
+-- Scan loop for prompts and glow
 local function updatePassSystem()
 	for _, holder in ipairs(Players:GetPlayers()) do
 		if not (holder.Team and holder.Team.Name == DESIGNER_TEAM) then
@@ -142,7 +113,7 @@ local function updatePassSystem()
 			continue
 		end
 
-		local hasFabric = getFabricTool(holder) ~= nil
+		local hasFabric  = getFabricTool(holder) ~= nil
 		local holderChar = holder.Character
 		local holderRoot = holderChar and holderChar:FindFirstChild("HumanoidRootPart")
 
@@ -154,11 +125,11 @@ local function updatePassSystem()
 
 				if not passPrompts[holder.UserId] then
 					local prompt = Instance.new("ProximityPrompt")
-					prompt.ActionText = "Pass Fabric"
-					prompt.ObjectText = "Pass to Teammate"
+					prompt.ActionText   = "Pass Fabric"
+					prompt.ObjectText   = "Pass to Teammate"
 					prompt.HoldDuration = 0
-					prompt.RequiresLineOfSight = false
-					prompt.MaxActivationDistance = PASS_RANGE
+					prompt.RequiresLineOfSight    = false
+					prompt.MaxActivationDistance  = PASS_RANGE
 					prompt.Parent = holderRoot
 
 					prompt.Triggered:Connect(function(teammate)
