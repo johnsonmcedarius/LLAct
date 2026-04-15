@@ -1,11 +1,26 @@
--- AbilitySlotService (Script in ServerScriptService)
--- Phase 5: ProcessReceipt REMOVED. MarketplaceHandler owns it.
--- Slot unlock now driven by player attribute "UnlockedAbilitySlots"
--- set by MarketplaceHandler when gamepass is detected.
+-- DataManager (Script in ServerScriptService)
+-- Phase 5: Complete final version.
+-- New: UnlockBundle(), VIP 20% coin bonus in AddCoins,
+--      Trust Fund / Trendsetter multiplier attribute reads,
+--      STARTING_DATA includes DailyLookbook, RedeemedCodes,
+--      Inventory, PityCounter.
+-- GetProductInfoAsync helper for Shop UI live pricing.
 
-local Players           = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players            = game:GetService("Players")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local MarketplaceService = game:GetService("MarketplaceService")
 
+-- ---- Module loading with debug prints ----
+print("[DATA] Loading ProfileStore...")
+local ProfileStore = require(ServerScriptService:WaitForChild("ProfileStore"):WaitForChild("ProfileStore"))
+print("[DATA] ProfileStore loaded.")
+
+print("[DATA] Loading ReplicaService...")
+local ReplicaService = require(ServerScriptService:WaitForChild("ReplicaService"):WaitForChild("ReplicaService"))
+print("[DATA] ReplicaService loaded.")
+
+-- ---- Remotes ----
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
 local function getRemote(name)
@@ -14,123 +29,408 @@ local function getRemote(name)
 	return r
 end
 
-local AbilitySlotUnlock  = getRemote("AbilitySlotUnlock")
-local SpinAbility        = getRemote("SpinAbility")
-local UpdateAbilitySlots = getRemote("UpdateAbilitySlots")
+local ShowRewardPopup    = getRemote("ShowRewardPopup")
+local GetProductInfoRemote = getRemote("GetProductInfo")  -- client requests live price
 
-local SPIN_COST = 100  -- Coins per spin
+-- ---- Constants ----
+local DATA_VERSION            = "v1.5"  -- bump on breaking schema changes
+local PROFILE_STORE_NAME      = "Player_Data_" .. DATA_VERSION
+local PLAYER_DATA_CLASS_TOKEN = ReplicaService.NewClassToken("PlayerData")
 
-local AbilityPool = {
-	{Name = "Hairspray Bomb",    Rarity = "Common",    Weight = 50},
-	{Name = "Camera Flash",      Rarity = "Common",    Weight = 50},
-	{Name = "High Heel Trap",    Rarity = "Common",    Weight = 50},
-	{Name = "Double Spray",      Rarity = "Rare",      Weight = 25},
-	{Name = "Chain Flash",       Rarity = "Rare",      Weight = 25},
-	{Name = "Heel Storm",        Rarity = "Epic",      Weight = 10},
-	{Name = "Fashion Surge",     Rarity = "Epic",      Weight = 10},
-	{Name = "The Takedown",      Rarity = "Legendary", Weight = 4},
-	{Name = "Style Shock",       Rarity = "Mythic",    Weight = 1},
+-- ---- Starting data ----
+local STARTING_DATA = {
+	Coins  = 500,
+	Level  = 1,
+	XP     = 0,
+
+	OwnedItems = {
+		Skins      = {"Default"},
+		WeaponSkins = {},
+		Weapons    = {"BasicScissors"},
+		Podiums    = {"BasicPodium"},
+		Emotes     = {"Wave"},
+		Effects    = {"White"},
+	},
+
+	Equipped = {
+		Skin    = "Default",
+		Weapon  = "BasicScissors",
+		Podium  = "BasicPodium",
+		Emote   = "Wave",
+		Effect  = "White",
+		Pose    = "rbxassetid://74997474532222",
+	},
+
+	-- Inventory (crates, consumables)
+	Inventory = {
+		CoinDesignerCrate  = 0,
+		RobuxDesignerCrate = 0,
+	},
+
+	-- Gacha pity counters (persist so they survive session end)
+	PityCounter = {
+		CoinDesignerCrate  = 0,
+		RobuxDesignerCrate = 0,
+	},
+
+	-- Daily Lookbook (managed by DailyLookbook service)
+	DailyLookbook = nil,
+
+	-- Redeemed codes (managed by CodesService)
+	RedeemedCodes = {},
+
+	-- Subscription state
+	SubscriptionCoinGrantedThisMonth = false,
+
+	-- Login
+	LoginStreak = 0,
+	LastLogin   = 0,
+	MysteryBoxAvailable = true,
 }
 
--- Per-player slot data
-local slotData = {}
+local BASE_XP       = 100
+local XP_MULTIPLIER = 1.3
 
-local function getSlots(player)
-	if not slotData[player.UserId] then
-		-- Read unlocked count from attribute (set by MarketplaceHandler)
-		local unlocked = player:GetAttribute("UnlockedAbilitySlots") or 1
-		slotData[player.UserId] = {
-			slots         = {nil, nil, nil},
-			unlockedSlots = unlocked,
-		}
+-- Internal tables
+local Profiles = {}
+local Replicas = {}
+
+local DataManager = {}
+
+-- ---- Attribute map: Equipped slot key -> player Attribute name ----
+local ATTRIBUTE_MAP = {
+	Podium  = "EquippedPodium",
+	Effect  = "EquippedFreezeEffect",
+	Pose    = "EquippedPose",
+	Skin    = "EquippedSkin",
+	Weapon  = "EquippedWeapon",
+	Emote   = "EquippedEmote",
+}
+
+-------------------------------------------------
+-- XP / Level helpers
+-------------------------------------------------
+local function GetRequiredXP(level)
+	return math.floor(BASE_XP * (level ^ XP_MULTIPLIER))
+end
+
+local function CheckLevelUp(player)
+	local profile = Profiles[player]
+	local replica = Replicas[player]
+	if not profile or not replica then return end
+
+	local data   = profile.Data
+	local reqXP  = GetRequiredXP(data.Level)
+	local leveled = false
+
+	while data.XP >= reqXP do
+		data.XP   -= reqXP
+		data.Level += 1
+		reqXP      = GetRequiredXP(data.Level)
+		leveled    = true
 	end
-	return slotData[player.UserId]
-end
 
-local function syncToClient(player)
-	local data = getSlots(player)
-	UpdateAbilitySlots:FireClient(player, data.slots, data.unlockedSlots)
-end
-
--- Re-sync when MarketplaceHandler unlocks a new slot
-local function onUnlockedSlotsChanged(player)
-	local unlocked = player:GetAttribute("UnlockedAbilitySlots") or 1
-	local data = getSlots(player)
-	if unlocked > data.unlockedSlots then
-		data.unlockedSlots = unlocked
-		syncToClient(player)
-		AbilitySlotUnlock:FireClient(player, unlocked)
-		print("[ABILITY] " .. player.Name .. " slot " .. unlocked .. " now active.")
+	if leveled then
+		replica:SetValue({"Level"}, data.Level)
+		replica:SetValue({"XP"}, data.XP)
+		print("[DATA] " .. player.Name .. " leveled up to " .. data.Level)
 	end
 end
 
-local function watchPlayer(player)
-	player:GetAttributeChangedSignal("UnlockedAbilitySlots"):Connect(function()
-		onUnlockedSlotsChanged(player)
-	end)
-end
+-------------------------------------------------
+-- Attribute sync on profile load
+-------------------------------------------------
+local function syncEquippedAttributes(player)
+	local profile = Profiles[player]
+	if not profile then return end
 
-local function spinAbility()
-	local weighted = {}
-	for _, ability in ipairs(AbilityPool) do
-		for _ = 1, ability.Weight do table.insert(weighted, ability) end
+	local equipped = profile.Data.Equipped
+	for dataKey, attrName in pairs(ATTRIBUTE_MAP) do
+		local val = equipped[dataKey]
+		if val then player:SetAttribute(attrName, val) end
 	end
-	return weighted[math.random(#weighted)]
+
+	print("[DATA] Attributes synced for " .. player.Name)
 end
 
-SpinAbility.OnServerEvent:Connect(function(player, slotIndex)
-	if type(slotIndex) ~= "number" then return end
-	slotIndex = math.clamp(math.floor(slotIndex), 1, 3)
+-------------------------------------------------
+-- Public API
+-------------------------------------------------
 
-	local data = getSlots(player)
+function DataManager.GetProfile(player)
+	return Profiles[player]
+end
 
-	if slotIndex > data.unlockedSlots then
-		print("[ABILITY] " .. player.Name .. " slot " .. slotIndex .. " locked.")
+function DataManager.GetData(player)
+	local p = Profiles[player]
+	return p and p.Data or nil
+end
+
+function DataManager.GetRequiredXP(level)
+	return GetRequiredXP(level)
+end
+
+-- ---- Coins ----
+function DataManager.GetCoins(player)
+	local p = Profiles[player]
+	return p and p.Data.Coins or 0
+end
+
+function DataManager.AddCoins(player, amount)
+	local profile = Profiles[player]
+	local replica = Replicas[player]
+	if not profile or not replica then return end
+
+	local finalAmount = amount
+
+	-- VIP It Girl: +20% coin bonus on positive gains
+	if amount > 0 then
+		local vipBonus = player:GetAttribute("VIPCoinBonus")
+		if vipBonus and vipBonus > 0 then
+			finalAmount = math.floor(amount * (1 + vipBonus))
+		end
+	end
+
+	profile.Data.Coins = math.max(0, profile.Data.Coins + finalAmount)
+	replica:SetValue({"Coins"}, profile.Data.Coins)
+
+	if finalAmount > 0 then
+		ShowRewardPopup:FireClient(player, "", "+" .. finalAmount .. " Coins")
+	end
+end
+
+-- ---- XP ----
+function DataManager.AddXP(player, amount)
+	local profile = Profiles[player]
+	local replica = Replicas[player]
+	if not profile or not replica then return end
+
+	profile.Data.XP += amount
+	replica:SetValue({"XP"}, profile.Data.XP)
+	CheckLevelUp(player)
+
+	if amount > 0 then
+		ShowRewardPopup:FireClient(player, "+" .. amount .. " XP", "")
+	end
+end
+
+-- ---- Combined reward (with Trust Fund / Trendsetter multiplier support) ----
+function DataManager.AddReward(player, xp, coins, skipPopup)
+	local profile = Profiles[player]
+	local replica = Replicas[player]
+	if not profile or not replica then return end
+
+	local finalXP    = xp    or 0
+	local finalCoins = coins or 0
+
+	-- Trendsetter: 2x XP at match end
+	if finalXP > 0 then
+		local xpMult = player:GetAttribute("XPMultiplier")
+		if xpMult and xpMult > 1 then
+			finalXP = math.floor(finalXP * xpMult)
+		end
+	end
+
+	-- Trust Fund: 2x Coins at match end
+	if finalCoins > 0 then
+		local coinsMult = player:GetAttribute("CoinsMultiplier")
+		if coinsMult and coinsMult > 1 then
+			finalCoins = math.floor(finalCoins * coinsMult)
+		end
+
+		-- VIP coin bonus also applies here
+		local vipBonus = player:GetAttribute("VIPCoinBonus")
+		if vipBonus and vipBonus > 0 then
+			finalCoins = math.floor(finalCoins * (1 + vipBonus))
+		end
+	end
+
+	if finalXP > 0 then
+		profile.Data.XP += finalXP
+		replica:SetValue({"XP"}, profile.Data.XP)
+		CheckLevelUp(player)
+	end
+
+	if finalCoins > 0 then
+		profile.Data.Coins = math.max(0, profile.Data.Coins + finalCoins)
+		replica:SetValue({"Coins"}, profile.Data.Coins)
+	end
+
+	if not skipPopup then
+		local xpText    = finalXP    > 0 and ("+" .. finalXP    .. " XP")    or ""
+		local coinText  = finalCoins > 0 and ("+" .. finalCoins .. " Coins") or ""
+		ShowRewardPopup:FireClient(player, xpText, coinText)
+	end
+end
+
+-- ---- Inventory: give a single item ----
+function DataManager.GiveItem(player, category, itemName)
+	local profile = Profiles[player]
+	if not profile then return end
+
+	local owned = profile.Data.OwnedItems[category]
+	if not owned then
+		warn("[DATA] Unknown category: " .. tostring(category))
 		return
 	end
 
-	if not _G.DataManager then return end
-	local coins = _G.DataManager.GetCoins(player)
-	if coins < SPIN_COST then
-		print("[ABILITY] " .. player.Name .. " can't afford spin.")
-		return
+	for _, v in ipairs(owned) do
+		if v == itemName then return end  -- already owned
 	end
-	_G.DataManager.AddCoins(player, -SPIN_COST)
 
-	local result = spinAbility()
-	data.slots[slotIndex] = result.Name
-
-	print("[ABILITY] " .. player.Name .. " slot " .. slotIndex .. " -> " .. result.Name)
-	syncToClient(player)
-
-	local SpinResult = getRemote("AbilitySpinResult")
-	SpinResult:FireClient(player, slotIndex, result)
-
-	if _G.DailyLookbook then
-		_G.DailyLookbook.AddProgress(player, "Dashes", 1)
-	end
-end)
-
-_G.AbilitySlotService = {
-	GetSlots = function(player)
-		return getSlots(player).slots
-	end,
-}
-
-Players.PlayerAdded:Connect(function(player)
-	task.wait(3)
-	watchPlayer(player)
-	syncToClient(player)
-end)
-
-for _, p in ipairs(Players:GetPlayers()) do
-	watchPlayer(p)
-	task.spawn(function()
-		task.wait(3)
-		syncToClient(p)
-	end)
+	table.insert(owned, itemName)
+	print("[DATA] " .. player.Name .. " unlocked: " .. itemName .. " in " .. category)
 end
 
-Players.PlayerRemoving:Connect(function(p)
-	slotData[p.UserId] = nil
+-- ---- Inventory: unlock a bundle ----
+function DataManager.UnlockBundle(player, bundleKey)
+	local Registry = require(ReplicatedStorage:WaitForChild("MarketplaceRegistry"))
+	local bundle = Registry.Bundles[bundleKey]
+	if not bundle then
+		warn("[DATA] Bundle not found: " .. tostring(bundleKey))
+		return
+	end
+
+	-- Check time window
+	if not Registry.IsBundleActive(bundleKey) then
+		warn("[DATA] Bundle not active: " .. bundleKey)
+		return
+	end
+
+	for _, item in ipairs(bundle.Contents) do
+		DataManager.GiveItem(player, item.Category, item.ItemName)
+	end
+
+	print("[DATA] " .. player.Name .. " unlocked bundle: " .. bundle.Name)
+end
+
+-- ---- Equipped slots ----
+function DataManager.SetEquipped(player, slot, itemName)
+	local profile = Profiles[player]
+	if not profile then return end
+
+	profile.Data.Equipped[slot] = itemName
+
+	local attrName = ATTRIBUTE_MAP[slot]
+	if attrName then
+		player:SetAttribute(attrName, itemName)
+	end
+
+	print("[DATA] " .. player.Name .. " equipped " .. itemName .. " in " .. slot)
+end
+
+function DataManager.HasItem(player, category, itemName)
+	local profile = Profiles[player]
+	if not profile then return false end
+
+	local owned = profile.Data.OwnedItems[category]
+	if not owned then return false end
+
+	for _, v in ipairs(owned) do
+		if v == itemName then return true end
+	end
+	return false
+end
+
+-------------------------------------------------
+-- GetProductInfo relay for Shop UI
+-- Client fires this remote with a product/pass ID
+-- Server calls GetProductInfoAsync and returns live price/name
+-------------------------------------------------
+GetProductInfoRemote.OnServerEvent:Connect(function(player, assetId, infoType)
+	if type(assetId) ~= "number" then return end
+	infoType = infoType or Enum.InfoType.Product
+
+	local ok, info = pcall(function()
+		return MarketplaceService:GetProductInfo(assetId, infoType)
+	end)
+
+	if ok and info then
+		local PriceRelay = getRemote("ProductInfoResult")
+		PriceRelay:FireClient(player, assetId, {
+			Name      = info.Name,
+			PriceInRobux = info.PriceInRobux,
+			IsForSale = info.IsForSale,
+		})
+	else
+		warn("[DATA] GetProductInfo failed for ID " .. tostring(assetId))
+	end
 end)
+
+-------------------------------------------------
+-- Player session
+-------------------------------------------------
+local function PlayerAdded(player)
+	print("[DATA] Loading profile for " .. player.Name .. "...")
+
+	local store   = ProfileStore.New(PROFILE_STORE_NAME, STARTING_DATA)
+	local profile = store:StartSessionAsync(tostring(player.UserId))
+
+	if profile then
+		profile:Reconcile()  -- Adds any new STARTING_DATA keys to existing saves
+
+		profile.OnSessionEnd:Connect(function()
+			Profiles[player] = nil
+			if Replicas[player] then
+				Replicas[player]:Destroy()
+				Replicas[player] = nil
+			end
+			if player.Parent then
+				player:Kick("Your data session ended. Please rejoin.")
+			end
+		end)
+
+		if player:IsDescendantOf(Players) then
+			Profiles[player] = profile
+
+			local replica = ReplicaService.NewReplica({
+				ClassToken  = PLAYER_DATA_CLASS_TOKEN,
+				Data        = profile.Data,
+				Replication = player,
+			})
+			Replicas[player] = replica
+
+			-- Sync equipped attributes
+			syncEquippedAttributes(player)
+
+			-- Login streak
+			local now  = os.time()
+			local last = profile.Data.LastLogin
+			local diff = now - last
+
+			if diff >= 86400 and diff < 172800 then
+				profile.Data.LoginStreak += 1
+			elseif diff >= 172800 then
+				profile.Data.LoginStreak = 1
+			end
+			profile.Data.LastLogin = now
+			replica:SetValue({"LoginStreak"}, profile.Data.LoginStreak)
+			replica:SetValue({"LastLogin"},   profile.Data.LastLogin)
+
+			print("[DATA] Profile loaded for " .. player.Name
+				.. " | Coins: " .. profile.Data.Coins
+				.. " | Level: " .. profile.Data.Level)
+		else
+			profile:EndSession()
+		end
+	else
+		player:Kick("Failed to load your fashion profile. Please rejoin.")
+		warn("[DATA] Failed to load profile for " .. player.Name)
+	end
+end
+
+Players.PlayerAdded:Connect(PlayerAdded)
+for _, p in ipairs(Players:GetPlayers()) do task.spawn(PlayerAdded, p) end
+
+Players.PlayerRemoving:Connect(function(player)
+	local profile = Profiles[player]
+	if profile then
+		profile:EndSession()
+		print("[DATA] Session ended for " .. player.Name)
+	end
+	Profiles[player] = nil
+	Replicas[player] = nil
+end)
+
+_G.DataManager = DataManager
+return DataManager
