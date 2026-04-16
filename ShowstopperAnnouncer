@@ -1,10 +1,12 @@
 -- ShowstopperAnnouncer (Script in ServerScriptService)
--- Fires ShowstopperAnnounce to all clients when a showstopper activates,
--- sending the player's name and showstopper title for the slide-in banner.
--- Also fires the cancelled UI banner when a player is eliminated.
+-- FIXED: ServiceRegistry replaces _G.ShowstopperService and _G.ShowstopperAnnouncer
+-- Registers itself so RelevanceSystem can call it via ServiceRegistry.Get()
 
-local Players           = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local ServiceRegistry    = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local ShowstopperService = ServiceRegistry.Await("ShowstopperService")
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
@@ -18,27 +20,22 @@ local ShowstopperAnnounce = getRemote("ShowstopperAnnounce")
 local ShowCancelledBanner = getRemote("ShowCancelledBanner")
 local ActivateShowstopper = getRemote("ActivateShowstopper")
 
--- Showstopper display names mapped to module names
 local ShowstopperTitles = {
-	Trendsetter       = "THE TALENT: TRENDSETTER",
-	FinalLook         = "THE TALENT: FINAL LOOK",
-	TheCancellation   = "THE CRITIC: THE CANCELLATION",
-	CeaseAndDesist    = "THE CRITIC: CEASE AND DESIST",
+	Trendsetter     = "THE TALENT: TRENDSETTER",
+	FinalLook       = "THE TALENT: FINAL LOOK",
+	TheCancellation = "THE CRITIC: THE CANCELLATION",
+	CeaseAndDesist  = "THE CRITIC: CEASE AND DESIST",
 }
 
--- Hook into ShowstopperService activation
--- We listen to the same ActivateShowstopper remote but ONLY for announcements.
--- The actual execution is handled by ShowstopperService.
+-- Listen to activation for announcement only
+-- (ShowstopperService handles the actual execution)
 ActivateShowstopper.OnServerEvent:Connect(function(player, moduleName)
-	-- Only announce if the player has full charge (ShowstopperService will validate too)
-	if not _G.ShowstopperService then return end
-	local charge = _G.ShowstopperService.GetCharge(player)
+	local charge = ShowstopperService.GetCharge(player)
 	if not charge or charge < 100 then return end
 
-	local teamName = player.Team and player.Team.Name or ""
+	local teamName       = player.Team and player.Team.Name or ""
 	local resolvedModule = moduleName
 
-	-- Resolve default module if nil
 	if not resolvedModule then
 		local ShowstoppersFolder = ReplicatedStorage:FindFirstChild("Showstoppers")
 		if ShowstoppersFolder then
@@ -58,14 +55,13 @@ ActivateShowstopper.OnServerEvent:Connect(function(player, moduleName)
 	ShowstopperAnnounce:FireAllClients(player.Name, displayTitle, message)
 end)
 
--------------------------------------------------
--- Cancelled banner (called by RelevanceSystem)
--- Exposes a global function that RelevanceSystem can call
--------------------------------------------------
-_G.ShowstopperAnnouncer = {
+local ShowstopperAnnouncer = {
 	AnnounceCancelled = function(cancelledPlayer)
 		local msg = cancelledPlayer.Name .. " HAS BEEN CANCELLED"
 		ShowCancelledBanner:FireAllClients(cancelledPlayer.Name, msg)
 		print("[ANNOUNCE] " .. msg)
 	end,
 }
+
+ServiceRegistry.Register("ShowstopperAnnouncer", ShowstopperAnnouncer)
+return ShowstopperAnnouncer
