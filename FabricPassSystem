@@ -1,8 +1,13 @@
 -- FabricPassSystem (Script in ServerScriptService)
--- Phase 5: DailyLookbook.AddProgress wired on successful pass.
+-- FIXED: ServiceRegistry.Await replaces _G
 
-local Players           = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players             = game:GetService("Players")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+
+local ShowstopperService = ServiceRegistry.Await("ShowstopperService")
 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
 
@@ -14,10 +19,10 @@ local function getRemote(name)
 	return r
 end
 
-local PassFabric        = getRemote("PassFabric")
-local PlayPoofVFX       = getRemote("PlayPoofVFX")
-local SetTeammateGlow   = getRemote("SetTeammateGlow")
-local ShowRewardPopup   = getRemote("ShowRewardPopup")
+local PassFabric      = getRemote("PassFabric")
+local PlayPoofVFX     = getRemote("PlayPoofVFX")
+local SetTeammateGlow = getRemote("SetTeammateGlow")
+local ShowRewardPopup = getRemote("ShowRewardPopup")
 
 local PASS_RANGE     = 15
 local DESIGNER_TEAM  = "Designers"
@@ -71,7 +76,6 @@ PassFabric.OnServerEvent:Connect(function(holder, targetPlayer)
 
 	print("[PASS] " .. holder.Name .. " -> " .. targetPlayer.Name)
 
-	-- IsPassing flag for intercept detection
 	if holder.Character then
 		holder.Character:SetAttribute("IsPassing", true)
 		task.delay(IS_PASSING_DUR, function()
@@ -87,22 +91,19 @@ PassFabric.OnServerEvent:Connect(function(holder, targetPlayer)
 	task.wait(0.1)
 	if tr then PlayPoofVFX:FireAllClients(tr.Position) end
 
-	-- Showstopper charge for both
-	if _G.ShowstopperService then
-		_G.ShowstopperService.OnFabricPass(holder, targetPlayer)
-	end
+	ShowstopperService.OnFabricPass(holder, targetPlayer)
 
-	-- Daily Lookbook: both players get credit for the pass
-	if _G.DailyLookbook then
-		_G.DailyLookbook.AddProgress(holder,       "Passes", 1)
-		_G.DailyLookbook.AddProgress(targetPlayer, "Passes", 1)
+	-- Optional DailyLookbook
+	local lb = ServiceRegistry.Get("DailyLookbook")
+	if lb then
+		lb.AddProgress(holder,       "Passes", 1)
+		lb.AddProgress(targetPlayer, "Passes", 1)
 	end
 
 	ShowRewardPopup:FireClient(holder,       "+10 Showstopper", "")
 	ShowRewardPopup:FireClient(targetPlayer, "+10 Showstopper", "")
 end)
 
--- Scan loop for prompts and glow
 local function updatePassSystem()
 	for _, holder in ipairs(Players:GetPlayers()) do
 		if not (holder.Team and holder.Team.Name == DESIGNER_TEAM) then
