@@ -1,11 +1,14 @@
 -- GiftingService (Script in ServerScriptService)
--- Players can gift CoinDesignerCrates or RobuxDesignerCrates to others.
--- Coin crate gifts use the sender's Coins.
--- Robux crate gifts go through MarketplaceService Developer Products.
+-- FIXED: ServiceRegistry replaces _G.DataManager and _G.GachaService
 
-local Players            = game:GetService("Players")
-local ReplicatedStorage  = game:GetService("ReplicatedStorage")
-local MarketplaceService = game:GetService("MarketplaceService")
+local Players             = game:GetService("Players")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local MarketplaceService  = game:GetService("MarketplaceService")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local DataManager     = ServiceRegistry.Await("DataManager")
+local GachaService    = ServiceRegistry.Await("GachaService")
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
@@ -18,25 +21,15 @@ end
 local GiftItem    = getRemote("GiftItem")
 local GiftReceived = getRemote("GiftReceived")
 
--- Product IDs for gifted Robux crates
--- When player A wants to gift player B a RobuxDesignerCrate,
--- they trigger a purchase on THEIR account for this product ID.
--- Your receipt handler then credits the gift target.
-local GIFT_ROBUX_CRATE_PRODUCT_ID = 0  -- TODO: Replace with real ID (99 Robux)
-local GIFT_COIN_CRATE_COST        = 500  -- Cost in sender's Coins to gift a coin crate
+local GIFT_ROBUX_CRATE_PRODUCT_ID = 0   -- TODO: Replace with real ID
+local GIFT_COIN_CRATE_COST        = 500
 
--- Pending gifts: [senderUserId] = targetUserId
--- Used to know who the gift goes to when the receipt fires
 local pendingGifts = {}
 
--------------------------------------------------
--- Send a coin crate gift (deduct from sender's coins)
--------------------------------------------------
 GiftItem.OnServerEvent:Connect(function(sender, targetUserId, itemType)
 	if type(targetUserId) ~= "number" then return end
 	if type(itemType) ~= "string" then return end
 
-	-- Find target player
 	local target = Players:GetPlayerByUserId(targetUserId)
 	if not target then
 		print("[GIFT] Target player not on server.")
@@ -49,49 +42,30 @@ GiftItem.OnServerEvent:Connect(function(sender, targetUserId, itemType)
 	end
 
 	if itemType == "CoinDesignerCrate" then
-		if not _G.DataManager then return end
-		local coins = _G.DataManager.GetCoins(sender)
+		local coins = DataManager.GetCoins(sender)
 		if coins < GIFT_COIN_CRATE_COST then
 			print("[GIFT] " .. sender.Name .. " can't afford to gift.")
 			return
 		end
 
-		_G.DataManager.AddCoins(sender, -GIFT_COIN_CRATE_COST)
-
-		if _G.GachaService then
-			_G.GachaService.AddCrate(target, "CoinDesignerCrate", 1)
-		end
-
-		-- Notify recipient
+		DataManager.AddCoins(sender, -GIFT_COIN_CRATE_COST)
+		GachaService.AddCrate(target, "CoinDesignerCrate", 1)
 		GiftReceived:FireClient(target, sender.Name, "CoinDesignerCrate")
 		print("[GIFT] " .. sender.Name .. " gifted a CoinDesignerCrate to " .. target.Name)
 
 	elseif itemType == "RobuxDesignerCrate" then
-		-- For Robux gifts, store the target and prompt the SENDER to purchase
-		-- the gift product. Receipt handler will forward to target.
 		pendingGifts[sender.UserId] = targetUserId
-		-- The client will call MarketplaceService:PromptProductPurchase with GIFT_ROBUX_CRATE_PRODUCT_ID
-		-- We just store who the target is here.
-		-- Trigger on client side via remote below:
-		local PromptGiftPurchase = Remotes:FindFirstChild("PromptGiftPurchase") or (function()
-			local r = Instance.new("RemoteEvent") r.Name = "PromptGiftPurchase" r.Parent = Remotes return r
-		end)()
+		local PromptGiftPurchase = getRemote("PromptGiftPurchase")
 		PromptGiftPurchase:FireClient(sender, GIFT_ROBUX_CRATE_PRODUCT_ID, targetUserId)
 	end
 end)
 
--------------------------------------------------
--- Receipt handler for gifted Robux crates
--- This integrates with the existing ProcessReceipt in AbilitySlotService.
--- Since Roblox only allows one ProcessReceipt, merge this logic there.
--- Here we expose a handler function for AbilitySlotService to call.
--------------------------------------------------
-_G.GiftingService = {
+local GiftingService = {
 	ProcessGiftReceipt = function(receiptInfo)
 		local senderId = receiptInfo.PlayerId
 
 		if receiptInfo.ProductId ~= GIFT_ROBUX_CRATE_PRODUCT_ID then
-			return false  -- Not a gift receipt
+			return false
 		end
 
 		local targetUserId = pendingGifts[senderId]
@@ -103,11 +77,9 @@ _G.GiftingService = {
 		local sender = Players:GetPlayerByUserId(senderId)
 
 		if target then
-			if _G.GachaService then
-				_G.GachaService.AddCrate(target, "RobuxDesignerCrate", 1)
-			end
+			GachaService.AddCrate(target, "RobuxDesignerCrate", 1)
 			GiftReceived:FireClient(target, sender and sender.Name or "Someone", "RobuxDesignerCrate")
-			print("[GIFT] Robux crate gifted to " .. (target.Name))
+			print("[GIFT] Robux crate gifted to " .. target.Name)
 		end
 
 		return true
@@ -117,3 +89,6 @@ _G.GiftingService = {
 Players.PlayerRemoving:Connect(function(p)
 	pendingGifts[p.UserId] = nil
 end)
+
+ServiceRegistry.Register("GiftingService", GiftingService)
+return GiftingService
