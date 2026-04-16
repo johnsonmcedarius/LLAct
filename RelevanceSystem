@@ -1,9 +1,14 @@
 -- RelevanceSystem (Script in ServerScriptService)
--- Phase 5: fires ShowstopperAnnouncer.AnnounceCancelled on strike 3 elimination.
+-- FIXED: Registers via ServiceRegistry. Round reset uses RoundEvents.
+-- ShowstopperAnnouncer resolved via ServiceRegistry.Get() (optional dep).
 
-local Players           = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Teams             = game:GetService("Teams")
+local Players             = game:GetService("Players")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local Teams               = game:GetService("Teams")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
 
@@ -18,14 +23,11 @@ end
 local UpdateStrikes    = getRemote("UpdateStrikes")
 local PlayerEliminated = getRemote("PlayerEliminated")
 
-local MAX_STRIKES  = 3
+local MAX_STRIKES   = 3
 local DESIGNER_TEAM = "Designers"
 
 local strikeData = {}
 
--------------------------------------------------
--- Helpers
--------------------------------------------------
 local function getStrikes(player)
 	return strikeData[player.UserId] or 0
 end
@@ -44,15 +46,14 @@ local function eliminatePlayer(player)
 		SoundService.FireToAll("CrowdBoo",          root.Position)
 	end
 
-	-- Fire cancelled banner to ALL players
 	PlayerEliminated:FireAllClients(player.Name)
 
-	-- ShowstopperAnnouncer broadcast (Phase 5 wiring)
-	if _G.ShowstopperAnnouncer then
-		_G.ShowstopperAnnouncer.AnnounceCancelled(player)
+	-- Optional dep — resolved at call time
+	local announcer = ServiceRegistry.Get("ShowstopperAnnouncer")
+	if announcer then
+		announcer.AnnounceCancelled(player)
 	end
 
-	-- Strip fabric
 	local toolInChar = player.Character and player.Character:FindFirstChild("FBRoll")
 	local toolInBp   = player.Backpack:FindFirstChild("FBRoll")
 	if toolInChar then toolInChar:Destroy() end
@@ -70,15 +71,11 @@ local function addStrike(player)
 	strikeData[player.UserId] = strikes
 
 	print("[RELEVANCE] " .. player.Name .. " has " .. strikes .. "/" .. MAX_STRIKES .. " strikes.")
-
 	UpdateStrikes:FireClient(player, strikes, MAX_STRIKES)
 
-	-- Broadcast strike to all so nameplates on all clients update
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p ~= player then
 			UpdateStrikes:FireClient(p, strikes, MAX_STRIKES)
-			-- Note: NameplateController distinguishes by sender context.
-			-- TagManager calls UpdateNameplate separately for third-party views.
 		end
 	end
 
@@ -93,31 +90,22 @@ local function addStrike(player)
 	end
 end
 
--------------------------------------------------
--- Global API
--------------------------------------------------
-_G.RelevanceSystem = {
-	AddStrike   = addStrike,
-	GetStrikes  = getStrikes,
+local RelevanceSystem = {
+	AddStrike    = addStrike,
+	GetStrikes   = getStrikes,
 	ResetStrikes = resetStrikes,
 }
 
--------------------------------------------------
--- Round reset
--------------------------------------------------
-local StatusValues = ReplicatedStorage:WaitForChild("StatusValues")
-local StatusText   = StatusValues:WaitForChild("StatusText")
-
-StatusText:GetPropertyChangedSignal("Value"):Connect(function()
-	local val = StatusText.Value
-	if val == "Intermission" or val == "Round Over!" or val == "Selecting Map..." then
-		for _, p in ipairs(Players:GetPlayers()) do
-			resetStrikes(p)
-		end
-		strikeData = {}
+RoundEvents.Intermission.Event:Connect(function()
+	for _, p in ipairs(Players:GetPlayers()) do
+		resetStrikes(p)
 	end
+	strikeData = {}
 end)
 
 Players.PlayerRemoving:Connect(function(p)
 	strikeData[p.UserId] = nil
 end)
+
+ServiceRegistry.Register("RelevanceSystem", RelevanceSystem)
+return RelevanceSystem
