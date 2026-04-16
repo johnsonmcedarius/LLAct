@@ -1,9 +1,13 @@
 -- HairsprayExplosionHandler (Script in ServerScriptService)
--- Phase 6: AbilityImmunity.TryHit() check before applying slow.
--- Diminishing returns reduce slow duration on successive hits.
+-- FIXED: ServiceRegistry replaces all _G references
 
-local Players           = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players             = game:GetService("Players")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local ServiceRegistry    = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local AbilityImmunity    = ServiceRegistry.Await("AbilityImmunity")
+local ShowstopperService = ServiceRegistry.Await("ShowstopperService")
 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
 local Remotes      = ReplicatedStorage:WaitForChild("Remotes")
@@ -20,12 +24,12 @@ local HUDCooldownUpdate     = getRemote("HUDCooldownUpdate")
 local AbilityCooldownUpdate = getRemote("AbilityCooldownUpdate")
 local CameraShake           = getRemote("CameraShake")
 
-local SERVER_COOLDOWN   = 8
-local MAX_ORIGIN_DIST   = 80
-local MAX_RADIUS        = 25
-local BASE_SLOW_DURATION = 5.0    -- seconds at full effect (no diminishing returns)
-local DESIGNER_TEAM     = "Designers"
-local CRITIC_TEAM       = "Critics"
+local SERVER_COOLDOWN    = 8
+local MAX_ORIGIN_DIST    = 80
+local MAX_RADIUS         = 25
+local BASE_SLOW_DURATION = 5.0
+local DESIGNER_TEAM      = "Designers"
+local CRITIC_TEAM        = "Critics"
 
 local lastUsedHairspray   = {}
 local lastUsedCooldownFwd = {}
@@ -75,19 +79,17 @@ HairsprayExplode.OnServerEvent:Connect(function(player, explosionPos, radius)
 		local pRoot = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
 		local hum   = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
 		if not pRoot or not hum then continue end
-
 		if (pRoot.Position - explosionPos).Magnitude > radius then continue end
 
-		-- ── Immunity check (Phase 6) ──
-		local multiplier = _G.AbilityImmunity and _G.AbilityImmunity.TryHit(p)
-		if not multiplier then continue end   -- immune or service not loaded
+		local multiplier = AbilityImmunity.TryHit(p)
+		if not multiplier then continue end
 
 		if not hum:GetAttribute("IsSlowed") then
 			hitAnyone = true
 			hum:SetAttribute("IsSlowed", true)
 
-			local originalSpeed  = hum.WalkSpeed
-			local slowDuration   = BASE_SLOW_DURATION * multiplier
+			local originalSpeed = hum.WalkSpeed
+			local slowDuration  = BASE_SLOW_DURATION * multiplier
 
 			hum.WalkSpeed = originalSpeed * 0.5
 
@@ -111,13 +113,10 @@ HairsprayExplode.OnServerEvent:Connect(function(player, explosionPos, radius)
 		SoundService.FireToClient(player, "AbilityMiss")
 	end
 
-	if hitAnyone and _G.ShowstopperService then
-		_G.ShowstopperService.OnAbilityHit(player)
-	end
-
-	-- Daily Lookbook
-	if hitAnyone and _G.DailyLookbook then
-		_G.DailyLookbook.AddProgress(player, "Stuns", 1)
+	if hitAnyone then
+		ShowstopperService.OnAbilityHit(player)
+		local lb = ServiceRegistry.Get("DailyLookbook")
+		if lb then lb.AddProgress(player, "Stuns", 1) end
 	end
 end)
 
