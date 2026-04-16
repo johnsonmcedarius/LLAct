@@ -1,10 +1,14 @@
 -- HighHeelTrapHandler (Script in ServerScriptService)
--- Phase 6: AbilityImmunity.TryHit() check before applying stun.
--- Diminishing returns reduce stun duration on successive hits.
+-- FIXED: ServiceRegistry replaces all _G references
 
-local Players           = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Debris            = game:GetService("Debris")
+local Players             = game:GetService("Players")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local Debris              = game:GetService("Debris")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local ServiceRegistry    = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local AbilityImmunity    = ServiceRegistry.Await("AbilityImmunity")
+local ShowstopperService = ServiceRegistry.Await("ShowstopperService")
 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
 local Remotes      = ReplicatedStorage:WaitForChild("Remotes")
@@ -17,7 +21,7 @@ end
 
 local PlaceHeelTrap = getRemote("PlaceHeelTrap")
 
-local BASE_STUN_DURATION = 3.0    -- seconds at full effect
+local BASE_STUN_DURATION = 3.0
 local TRAP_LIFETIME      = 10
 local SERVER_COOLDOWN    = 10
 local MAX_DISTANCE       = 20
@@ -71,8 +75,7 @@ PlaceHeelTrap.OnServerEvent:Connect(function(player, trapPosition)
 		if not (victimPlayer and victimPlayer.Team
 			and victimPlayer.Team.Name == CRITIC_TEAM and hum) then return end
 
-		-- ── Immunity check (Phase 6) ──
-		local multiplier = _G.AbilityImmunity and _G.AbilityImmunity.TryHit(victimPlayer)
+		local multiplier = AbilityImmunity.TryHit(victimPlayer)
 		if not multiplier then return end
 
 		triggered = true
@@ -88,12 +91,10 @@ PlaceHeelTrap.OnServerEvent:Connect(function(player, trapPosition)
 		hum.WalkSpeed     = 0
 		hum.PlatformStand = true
 
-		if _G.ShowstopperService then
-			_G.ShowstopperService.OnAbilityHit(player)
-		end
-		if _G.DailyLookbook then
-			_G.DailyLookbook.AddProgress(player, "Stuns", 1)
-		end
+		ShowstopperService.OnAbilityHit(player)
+
+		local lb = ServiceRegistry.Get("DailyLookbook")
+		if lb then lb.AddProgress(player, "Stuns", 1) end
 
 		task.wait(stunDuration)
 
