@@ -1,9 +1,13 @@
 -- CameraFlashHandler (Script in ServerScriptService)
--- Phase 6: AbilityImmunity.TryHit() check before blinding.
--- Diminishing returns reduce blind duration. LOS raycast kept.
+-- FIXED: ServiceRegistry.Await replaces _G.AbilityImmunity / _G.ShowstopperService / _G.DailyLookbook
 
-local Players           = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players             = game:GetService("Players")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local ServiceRegistry    = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local AbilityImmunity    = ServiceRegistry.Await("AbilityImmunity")
+local ShowstopperService = ServiceRegistry.Await("ShowstopperService")
 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
 local Remotes      = ReplicatedStorage:WaitForChild("Remotes")
@@ -22,19 +26,17 @@ local DESIGNER_TEAM       = "Designers"
 local CRITIC_TEAM         = "Critics"
 local MAX_ALLOWED_RADIUS  = 25
 local ORIGIN_TOLERANCE    = 10
-local BASE_BLIND_DURATION = 4.0    -- full blind at first hit
+local BASE_BLIND_DURATION = 4.0
+local SERVER_COOLDOWN     = 6
 
 local lastUsedFlash = {}
-local SERVER_COOLDOWN = 6
 
--- LOS check
 local function hasLineOfSight(fromPos, toPos, ignoreList)
-	local dir    = toPos - fromPos
-	local rp     = RaycastParams.new()
+	local dir = toPos - fromPos
+	local rp  = RaycastParams.new()
 	rp.FilterDescendantsInstances = ignoreList
 	rp.FilterType = Enum.RaycastFilterType.Exclude
-	local result = workspace:Raycast(fromPos, dir.Unit * dir.Magnitude, rp)
-	return result == nil
+	return workspace:Raycast(fromPos, dir.Unit * dir.Magnitude, rp) == nil
 end
 
 StunCriticRadius.OnServerEvent:Connect(function(player, flashPos, radius, duration)
@@ -49,7 +51,6 @@ StunCriticRadius.OnServerEvent:Connect(function(player, flashPos, radius, durati
 
 	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 	if not root then return end
-
 	if typeof(flashPos) ~= "Vector3" then return end
 	if (root.Position - flashPos).Magnitude > ORIGIN_TOLERANCE then
 		warn("[EXPLOIT] " .. player.Name .. " flash origin too far.")
@@ -66,21 +67,17 @@ StunCriticRadius.OnServerEvent:Connect(function(player, flashPos, radius, durati
 		local criticChar = critic.Character
 		local criticRoot = criticChar and criticChar:FindFirstChild("HumanoidRootPart")
 		if not criticRoot then continue end
-
 		if (criticRoot.Position - flashPos).Magnitude > radius then continue end
 
-		-- Line of sight
 		if not hasLineOfSight(flashPos, criticRoot.Position, {player.Character, criticChar}) then
 			print("[CAMERA] " .. critic.Name .. " blocked by wall.")
 			continue
 		end
 
-		-- ── Immunity check (Phase 6) ──
-		local multiplier = _G.AbilityImmunity and _G.AbilityImmunity.TryHit(critic)
+		local multiplier = AbilityImmunity.TryHit(critic)
 		if not multiplier then continue end
 
 		hitAnyone = true
-
 		local blindDuration = BASE_BLIND_DURATION * multiplier
 
 		BlindClient:FireClient(critic, blindDuration)
@@ -97,8 +94,9 @@ StunCriticRadius.OnServerEvent:Connect(function(player, flashPos, radius, durati
 	end
 
 	if hitAnyone then
-		if _G.ShowstopperService then _G.ShowstopperService.OnAbilityHit(player) end
-		if _G.DailyLookbook      then _G.DailyLookbook.AddProgress(player, "Stuns", 1) end
+		ShowstopperService.OnAbilityHit(player)
+		local lb = ServiceRegistry.Get("DailyLookbook")
+		if lb then lb.AddProgress(player, "Stuns", 1) end
 	end
 end)
 
