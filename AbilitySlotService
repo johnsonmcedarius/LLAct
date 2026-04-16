@@ -1,10 +1,12 @@
 -- AbilitySlotService (Script in ServerScriptService)
--- Phase 5: ProcessReceipt REMOVED. MarketplaceHandler owns it.
--- Slot unlock now driven by player attribute "UnlockedAbilitySlots"
--- set by MarketplaceHandler when gamepass is detected.
+-- FIXED: ServiceRegistry replaces _G.DataManager and _G.DailyLookbook
 
-local Players           = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players             = game:GetService("Players")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local DataManager     = ServiceRegistry.Await("DataManager")
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
@@ -18,26 +20,24 @@ local AbilitySlotUnlock  = getRemote("AbilitySlotUnlock")
 local SpinAbility        = getRemote("SpinAbility")
 local UpdateAbilitySlots = getRemote("UpdateAbilitySlots")
 
-local SPIN_COST = 100  -- Coins per spin
+local SPIN_COST = 100
 
 local AbilityPool = {
-	{Name = "Hairspray Bomb",    Rarity = "Common",    Weight = 50},
-	{Name = "Camera Flash",      Rarity = "Common",    Weight = 50},
-	{Name = "High Heel Trap",    Rarity = "Common",    Weight = 50},
-	{Name = "Double Spray",      Rarity = "Rare",      Weight = 25},
-	{Name = "Chain Flash",       Rarity = "Rare",      Weight = 25},
-	{Name = "Heel Storm",        Rarity = "Epic",      Weight = 10},
-	{Name = "Fashion Surge",     Rarity = "Epic",      Weight = 10},
-	{Name = "The Takedown",      Rarity = "Legendary", Weight = 4},
-	{Name = "Style Shock",       Rarity = "Mythic",    Weight = 1},
+	{Name = "Hairspray Bomb",  Rarity = "Common",    Weight = 50},
+	{Name = "Camera Flash",    Rarity = "Common",    Weight = 50},
+	{Name = "High Heel Trap",  Rarity = "Common",    Weight = 50},
+	{Name = "Double Spray",    Rarity = "Rare",      Weight = 25},
+	{Name = "Chain Flash",     Rarity = "Rare",      Weight = 25},
+	{Name = "Heel Storm",      Rarity = "Epic",      Weight = 10},
+	{Name = "Fashion Surge",   Rarity = "Epic",      Weight = 10},
+	{Name = "The Takedown",    Rarity = "Legendary", Weight = 4},
+	{Name = "Style Shock",     Rarity = "Mythic",    Weight = 1},
 }
 
--- Per-player slot data
 local slotData = {}
 
 local function getSlots(player)
 	if not slotData[player.UserId] then
-		-- Read unlocked count from attribute (set by MarketplaceHandler)
 		local unlocked = player:GetAttribute("UnlockedAbilitySlots") or 1
 		slotData[player.UserId] = {
 			slots         = {nil, nil, nil},
@@ -52,7 +52,6 @@ local function syncToClient(player)
 	UpdateAbilitySlots:FireClient(player, data.slots, data.unlockedSlots)
 end
 
--- Re-sync when MarketplaceHandler unlocks a new slot
 local function onUnlockedSlotsChanged(player)
 	local unlocked = player:GetAttribute("UnlockedAbilitySlots") or 1
 	local data = getSlots(player)
@@ -83,19 +82,17 @@ SpinAbility.OnServerEvent:Connect(function(player, slotIndex)
 	slotIndex = math.clamp(math.floor(slotIndex), 1, 3)
 
 	local data = getSlots(player)
-
 	if slotIndex > data.unlockedSlots then
 		print("[ABILITY] " .. player.Name .. " slot " .. slotIndex .. " locked.")
 		return
 	end
 
-	if not _G.DataManager then return end
-	local coins = _G.DataManager.GetCoins(player)
+	local coins = DataManager.GetCoins(player)
 	if coins < SPIN_COST then
 		print("[ABILITY] " .. player.Name .. " can't afford spin.")
 		return
 	end
-	_G.DataManager.AddCoins(player, -SPIN_COST)
+	DataManager.AddCoins(player, -SPIN_COST)
 
 	local result = spinAbility()
 	data.slots[slotIndex] = result.Name
@@ -106,15 +103,13 @@ SpinAbility.OnServerEvent:Connect(function(player, slotIndex)
 	local SpinResult = getRemote("AbilitySpinResult")
 	SpinResult:FireClient(player, slotIndex, result)
 
-	if _G.DailyLookbook then
-		_G.DailyLookbook.AddProgress(player, "Dashes", 1)
-	end
+	-- Optional dep
+	local lb = ServiceRegistry.Get("DailyLookbook")
+	if lb then lb.AddProgress(player, "Dashes", 1) end
 end)
 
-_G.AbilitySlotService = {
-	GetSlots = function(player)
-		return getSlots(player).slots
-	end,
+local AbilitySlotService = {
+	GetSlots = function(player) return getSlots(player).slots end,
 }
 
 Players.PlayerAdded:Connect(function(player)
@@ -125,12 +120,12 @@ end)
 
 for _, p in ipairs(Players:GetPlayers()) do
 	watchPlayer(p)
-	task.spawn(function()
-		task.wait(3)
-		syncToClient(p)
-	end)
+	task.spawn(function() task.wait(3) syncToClient(p) end)
 end
 
 Players.PlayerRemoving:Connect(function(p)
 	slotData[p.UserId] = nil
 end)
+
+ServiceRegistry.Register("AbilitySlotService", AbilitySlotService)
+return AbilitySlotService
