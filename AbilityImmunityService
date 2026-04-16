@@ -1,28 +1,17 @@
 -- AbilityImmunityService (Script in ServerScriptService)
--- Prevents critics from being double-teamed by designer abilities.
--- After any ability lands on a critic, that critic is immune to all
--- designer abilities for IMMUNITY_WINDOW seconds.
---
--- Diminishing returns are also implemented:
--- Each hit within a match increments a hit counter for that critic.
--- Each subsequent hit that gets through reduces the effect duration
--- applied by the calling ability handler.
---
--- Adjust IMMUNITY_WINDOW and DIMINISHING_RETURN_FACTOR freely here.
+-- FIXED: Registers via ServiceRegistry. Round reset uses RoundEvents.
 
-local Players = game:GetService("Players")
+local Players             = game:GetService("Players")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
--- ============================================================
--- CONFIG — change these at any time without touching other scripts
--- ============================================================
-local IMMUNITY_WINDOW           = 15     -- seconds of immunity after being hit
-local DIMINISHING_RETURN_FACTOR = 0.75   -- each successive hit applies 75% of the previous duration
-local MIN_EFFECT_MULTIPLIER     = 0.25   -- floor: effects never drop below 25% duration
+local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
 
--- ============================================================
--- State
--- ============================================================
--- [criticUserId] = { immuneUntil = os.clock(), hitCount = 0 }
+local IMMUNITY_WINDOW           = 15
+local DIMINISHING_RETURN_FACTOR = 0.75
+local MIN_EFFECT_MULTIPLIER     = 0.25
+
 local criticState = {}
 
 local function getState(critic)
@@ -32,34 +21,21 @@ local function getState(critic)
 	return criticState[critic.UserId]
 end
 
--- ============================================================
--- Public API
--- ============================================================
-
--- Returns true if the critic can be affected by an ability right now.
 local function canHit(critic)
 	if not critic or not critic.Parent then return false end
-	local state = getState(critic)
-	return os.clock() >= state.immuneUntil
+	return os.clock() >= getState(critic).immuneUntil
 end
 
--- Call this immediately when an ability successfully lands on a critic.
--- Returns the effect duration multiplier the ability should use.
 local function registerHit(critic)
 	if not critic or not critic.Parent then return 1 end
-
 	local state = getState(critic)
 
-	-- Calculate diminishing multiplier based on hit count this match
 	local multiplier = math.max(
 		MIN_EFFECT_MULTIPLIER,
 		DIMINISHING_RETURN_FACTOR ^ state.hitCount
 	)
 
-	-- Increment hit count AFTER calculating (first hit = full effect)
 	state.hitCount   += 1
-
-	-- Set immunity window
 	state.immuneUntil = os.clock() + IMMUNITY_WINDOW
 
 	print("[IMMUNITY] " .. critic.Name
@@ -70,49 +46,32 @@ local function registerHit(critic)
 	return multiplier
 end
 
--- Reset a critic's hit counter (call at round start)
 local function resetCritic(critic)
 	criticState[critic.UserId] = {immuneUntil = 0, hitCount = 0}
 end
 
--- ============================================================
--- Global API (consumed by HairsprayExplosionHandler,
--- HighHeelTrapHandler, CameraFlashHandler)
--- ============================================================
-_G.AbilityImmunity = {
+local AbilityImmunity = {
 	CanHit      = canHit,
 	RegisterHit = registerHit,
 	ResetCritic = resetCritic,
-
-	-- Convenience: check + register in one call.
-	-- Returns nil if immune, or the effect multiplier if the hit goes through.
-	TryHit = function(critic)
+	TryHit      = function(critic)
 		if not canHit(critic) then
-			print("[IMMUNITY] " .. (critic and critic.Name or "?")
-				.. " is immune. Hit blocked.")
+			print("[IMMUNITY] " .. (critic and critic.Name or "?") .. " is immune. Hit blocked.")
 			return nil
 		end
 		return registerHit(critic)
 	end,
 }
 
--- ============================================================
--- Round reset: clear all immunity state
--- ============================================================
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local StatusValues      = ReplicatedStorage:WaitForChild("StatusValues")
-local StatusText        = StatusValues:WaitForChild("StatusText")
-
-StatusText:GetPropertyChangedSignal("Value"):Connect(function()
-	local val = StatusText.Value
-	if val == "Intermission" or val == "Round Over!" or val == "Selecting Map..." then
-		criticState = {}
-		print("[IMMUNITY] All critic immunity states reset.")
-	end
+RoundEvents.Intermission.Event:Connect(function()
+	criticState = {}
+	print("[IMMUNITY] All critic immunity states reset.")
 end)
 
 Players.PlayerRemoving:Connect(function(p)
 	criticState[p.UserId] = nil
 end)
 
+ServiceRegistry.Register("AbilityImmunity", AbilityImmunity)
 print("[IMMUNITY] AbilityImmunityService ready. Window=" .. IMMUNITY_WINDOW .. "s")
+return AbilityImmunity
