@@ -1,12 +1,10 @@
--- FabricPassSystem (Script in ServerScriptService)
--- FIXED: ServiceRegistry.Await replaces _G
-
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
 
+-- Await hard dependencies
 local ShowstopperService = ServiceRegistry.Await("ShowstopperService")
 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
@@ -29,6 +27,7 @@ local DESIGNER_TEAM  = "Designers"
 local SCAN_INTERVAL  = 0.3
 local IS_PASSING_DUR = 0.5
 
+-- [holderUserId][targetUserId] = prompt
 local passPrompts = {}
 
 local function getFabricTool(player)
@@ -55,7 +54,8 @@ local function getTeammatesInRange(holder, range)
 	return nearby
 end
 
-PassFabric.OnServerEvent:Connect(function(holder, targetPlayer)
+-- ── The Logic (Moved to a shared function) ──────────────────────────────────
+local function executePass(holder, targetPlayer)
 	if not (holder.Team and holder.Team.Name == DESIGNER_TEAM) then return end
 	if not (targetPlayer and targetPlayer.Team and targetPlayer.Team.Name == DESIGNER_TEAM) then return end
 	if holder == targetPlayer then return end
@@ -67,15 +67,13 @@ PassFabric.OnServerEvent:Connect(function(holder, targetPlayer)
 	local tr = getRoot(targetPlayer)
 	if not hr or not tr then return end
 
-	if (hr.Position - tr.Position).Magnitude > PASS_RANGE + 5 then
-		warn("[PASS] Distance exploit by " .. holder.Name)
-		return
-	end
-
+	-- Exploit check
+	if (hr.Position - tr.Position).Magnitude > PASS_RANGE + 10 then return end
 	if getFabricTool(targetPlayer) then return end
 
 	print("[PASS] " .. holder.Name .. " -> " .. targetPlayer.Name)
 
+	-- Visual feedback
 	if holder.Character then
 		holder.Character:SetAttribute("IsPassing", true)
 		task.delay(IS_PASSING_DUR, function()
@@ -86,6 +84,7 @@ PassFabric.OnServerEvent:Connect(function(holder, targetPlayer)
 	PlayPoofVFX:FireAllClients(hr.Position)
 	SoundService.FireToAll("FabricPass", hr.Position)
 
+	-- INVENTORY TO INVENTORY PASS
 	fabricTool.Parent = targetPlayer.Backpack
 
 	task.wait(0.1)
@@ -102,59 +101,66 @@ PassFabric.OnServerEvent:Connect(function(holder, targetPlayer)
 
 	ShowRewardPopup:FireClient(holder,       "+10 Showstopper", "")
 	ShowRewardPopup:FireClient(targetPlayer, "+10 Showstopper", "")
-end)
+end
 
+-- Remote still works for manual/client triggers
+PassFabric.OnServerEvent:Connect(executePass)
+
+-- ── Pass Management ──────────────────────────────────────────────────────────
 local function updatePassSystem()
 	for _, holder in ipairs(Players:GetPlayers()) do
-		if not (holder.Team and holder.Team.Name == DESIGNER_TEAM) then
-			if passPrompts[holder.UserId] then
-				passPrompts[holder.UserId]:Destroy()
-				passPrompts[holder.UserId] = nil
-			end
-			continue
-		end
+		local uid = holder.UserId
+		passPrompts[uid] = passPrompts[uid] or {}
 
 		local hasFabric  = getFabricTool(holder) ~= nil
-		local holderChar = holder.Character
-		local holderRoot = holderChar and holderChar:FindFirstChild("HumanoidRootPart")
+		local holderRoot = getRoot(holder)
 
-		if hasFabric and holderRoot then
+		if hasFabric and holderRoot and (holder.Team and holder.Team.Name == DESIGNER_TEAM) then
 			local nearby = getTeammatesInRange(holder, PASS_RANGE)
+			SetTeammateGlow:FireClient(holder, nearby, true)
 
-			if #nearby > 0 then
-				SetTeammateGlow:FireClient(holder, nearby, true)
+			-- Create/Update prompts on nearby teammates
+			local currentNearbyIds = {}
+			for _, teammate in ipairs(nearby) do
+				local tUid = teammate.UserId
+				currentNearbyIds[tUid] = true
 
-				if not passPrompts[holder.UserId] then
-					local prompt = Instance.new("ProximityPrompt")
-					prompt.ActionText   = "Pass Fabric"
-					prompt.ObjectText   = "Pass to Teammate"
-					prompt.HoldDuration = 0
-					prompt.RequiresLineOfSight    = false
-					prompt.MaxActivationDistance  = PASS_RANGE
-					prompt.Parent = holderRoot
+				if not passPrompts[uid][tUid] then
+					local tRoot = getRoot(teammate)
+					if tRoot then
+						local prompt = Instance.new("ProximityPrompt")
+						prompt.ActionText   = "Give Fabric"
+						prompt.ObjectText   = "Pass to " .. teammate.Name
+						prompt.HoldDuration = 0
+						prompt.MaxActivationDistance = 8
+						prompt.RequiresLineOfSight   = false
+						prompt.Parent = tRoot
 
-					prompt.Triggered:Connect(function(teammate)
-						if not (teammate.Team and teammate.Team.Name == DESIGNER_TEAM) then return end
-						if teammate == holder then return end
-						if getFabricTool(teammate) then return end
-						PassFabric:FireServer(teammate)
-					end)
-
-					passPrompts[holder.UserId] = prompt
+						prompt.Triggered:Connect(function(playerWhoTriggered)
+							-- Only the person holding the fabric can trigger this specific pass
+							if playerWhoTriggered == holder then
+								executePass(holder, teammate)
+							end
+						end)
+						passPrompts[uid][tUid] = prompt
+					end
 				end
-			else
-				SetTeammateGlow:FireClient(holder, {}, false)
-				if passPrompts[holder.UserId] then
-					passPrompts[holder.UserId]:Destroy()
-					passPrompts[holder.UserId] = nil
+			end
+
+			-- Cleanup teammates who moved out of range
+			for tUid, prompt in pairs(passPrompts[uid]) do
+				if not currentNearbyIds[tUid] then
+					if prompt then prompt:Destroy() end
+					passPrompts[uid][tUid] = nil
 				end
 			end
 		else
+			-- Holder lost fabric or isn't a designer: wipe their prompts
 			SetTeammateGlow:FireClient(holder, {}, false)
-			if passPrompts[holder.UserId] then
-				passPrompts[holder.UserId]:Destroy()
-				passPrompts[holder.UserId] = nil
+			for tUid, prompt in pairs(passPrompts[uid]) do
+				if prompt then prompt:Destroy() end
 			end
+			passPrompts[uid] = {}
 		end
 	end
 end
@@ -167,8 +173,11 @@ task.spawn(function()
 end)
 
 Players.PlayerRemoving:Connect(function(p)
-	if passPrompts[p.UserId] then
-		passPrompts[p.UserId]:Destroy()
-		passPrompts[p.UserId] = nil
+	local uid = p.UserId
+	if passPrompts[uid] then
+		for _, prompt in pairs(passPrompts[uid]) do
+			if prompt then prompt:Destroy() end
+		end
+		passPrompts[uid] = nil
 	end
 end)
