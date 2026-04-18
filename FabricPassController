@@ -1,7 +1,3 @@
--- FabricPassController (LocalScript in StarterPlayerScripts)
--- Handles: white glow on passable teammates, poof VFX, snip/zip proximity sound
-
--- Services
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
@@ -28,12 +24,13 @@ local function applyGlow(targetPlayer)
 	local char = targetPlayer.Character
 	if not char then return end
 
-	local highlight = Instance.new("SelectionBox")
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "PassHighlight"
 	highlight.Adornee = char
-	highlight.Color3 = Color3.new(1, 1, 1)
-	highlight.LineThickness = 0.08
-	highlight.SurfaceTransparency = 0.7
-	highlight.SurfaceColor3 = Color3.new(1, 1, 1)
+	highlight.FillTransparency = 1 -- No solid fill, just the outline
+	highlight.OutlineColor = Color3.new(1, 1, 1) -- Pure white
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop -- See through walls
 	highlight.Parent = char
 
 	activeHighlights[targetPlayer.UserId] = highlight
