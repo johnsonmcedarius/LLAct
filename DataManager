@@ -1,21 +1,25 @@
--- DataManager (Script in ServerScriptService)
--- FIXED: Registers via ServiceRegistry instead of _G.DataManager
--- All other changes identical to original.
-
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local MarketplaceService  = game:GetService("MarketplaceService")
 
-print("[DATA] Loading ServiceRegistry...")
+
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local DataManager = {}
+
+
+ServiceRegistry.Register("DataManager", DataManager)
+
 
 print("[DATA] Loading ProfileStore...")
-local ProfileStore = require(ServerScriptService:WaitForChild("ProfileStore"):WaitForChild("ProfileStore"))
+
+local ProfileStoreFolder = ServerScriptService:WaitForChild("ProfileStore")
+local ProfileStore = require(ProfileStoreFolder:WaitForChild("ProfileStore"))
 print("[DATA] ProfileStore loaded.")
 
 print("[DATA] Loading ReplicaService...")
-local ReplicaService = require(ServerScriptService:WaitForChild("ReplicaService"):WaitForChild("ReplicaService"))
+local ReplicaServiceFolder = ServerScriptService:WaitForChild("ReplicaService")
+local ReplicaService = require(ReplicaServiceFolder:WaitForChild("ReplicaService"))
 print("[DATA] ReplicaService loaded.")
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
@@ -64,7 +68,6 @@ local STARTING_DATA = {
 		RobuxDesignerCrate = 0,
 	},
 
-	-- Pity counters persist across sessions
 	PityCounter = {
 		CoinDesignerCrate  = 0,
 		RobuxDesignerCrate = 0,
@@ -85,8 +88,6 @@ local XP_MULTIPLIER = 1.3
 
 local Profiles = {}
 local Replicas = {}
-
-local DataManager = {}
 
 local ATTRIBUTE_MAP = {
 	Podium  = "EquippedPodium",
@@ -339,7 +340,6 @@ local function PlayerAdded(player)
 
 			syncEquippedAttributes(player)
 
-			-- Login streak
 			local now  = os.time()
 			local last = profile.Data.LastLogin
 			local diff = now - last
@@ -378,6 +378,4 @@ Players.PlayerRemoving:Connect(function(player)
 	Replicas[player] = nil
 end)
 
--- ── Register with ServiceRegistry (replaces _G.DataManager) ──────────────────
-ServiceRegistry.Register("DataManager", DataManager)
 return DataManager
