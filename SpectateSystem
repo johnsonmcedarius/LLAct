@@ -1,51 +1,54 @@
 -- SpectateSystem (Script in ServerScriptService)
--- When players are frozen or in Lobby, they can spectate.
--- Spectators can spend Coins to bet on who survives.
--- Bet availability is randomized per round to prevent match-throwing.
+-- FIXED:
+--   1. ServiceRegistry.Await("DataManager") replaces _G.DataManager
+--   2. RoundEvents replaces StatusText string matching for round lifecycle
 
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Teams = game:GetService("Teams")
+local Players             = game:GetService("Players")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local Teams               = game:GetService("Teams")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
+
+-- Await DataManager — safe, no race condition
+local DataManager = ServiceRegistry.Await("DataManager")
 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
 
-local StatusValues = ReplicatedStorage:WaitForChild("StatusValues")
-local StatusText = StatusValues:WaitForChild("StatusText")
-
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
-local StartSpectate  = Remotes:FindFirstChild("StartSpectate") or Instance.new("RemoteEvent", Remotes)
-StartSpectate.Name = "StartSpectate"
+local function makeRemote(name)
+	local r = Remotes:FindFirstChild(name)
+	if not r then
+		r        = Instance.new("RemoteEvent")
+		r.Name   = name
+		r.Parent = Remotes
+	end
+	return r
+end
 
-local StopSpectate   = Remotes:FindFirstChild("StopSpectate") or Instance.new("RemoteEvent", Remotes)
-StopSpectate.Name = "StopSpectate"
-
-local PlaceBet       = Remotes:FindFirstChild("PlaceBet") or Instance.new("RemoteEvent", Remotes)
-PlaceBet.Name = "PlaceBet"
-
-local BetResult      = Remotes:FindFirstChild("BetResult") or Instance.new("RemoteEvent", Remotes)
-BetResult.Name = "BetResult"
-
-local UpdateBetTargets = Remotes:FindFirstChild("UpdateBetTargets") or Instance.new("RemoteEvent", Remotes)
-UpdateBetTargets.Name = "UpdateBetTargets"
+local StartSpectate    = makeRemote("StartSpectate")
+local StopSpectate     = makeRemote("StopSpectate")
+local PlaceBet         = makeRemote("PlaceBet")
+local BetResult        = makeRemote("BetResult")
+local UpdateBetTargets = makeRemote("UpdateBetTargets")
+local CycleSpectate    = makeRemote("CycleSpectate")
 
 -- Config
-local BET_COST = 50           -- Coins to place a bet
-local BET_PAYOUT_MULTIPLIER = 2.5  -- Winnings multiplier
-local BET_AVAILABILITY_CHANCE = 0.7 -- 70% chance betting is open any given round
+local BET_COST                = 50
+local BET_PAYOUT_MULTIPLIER   = 2.5
+local BET_AVAILABILITY_CHANCE = 0.7
 
 -- State
-local spectators = {}         -- [userId] = {target = player}
-local bets = {}               -- [bettorUserId] = {target = player, amount = number}
-local bettingOpen = false
-local roundActive = false
+local spectators   = {}    -- [userId] = {target = player}
+local bets         = {}    -- [bettorUserId] = {target = player, amount = number}
+local bettingOpen  = false
+local roundActive  = false
 
--------------------------------------------------
--- Helpers
--------------------------------------------------
-
+-- ── Helpers ───────────────────────────────────────────────────────────────────
 local function isSpectator(player)
-	return player.Team and (player.Team.Name == "Lobby")
+	return player.Team and player.Team.Name == "Lobby"
 end
 
 local function getActiveDesigners()
@@ -67,9 +70,7 @@ local function sendBetTargets(spectator)
 	UpdateBetTargets:FireClient(spectator, names, bettingOpen, BET_COST)
 end
 
--------------------------------------------------
--- Spectate assignment
--------------------------------------------------
+-- ── Spectate assignment ───────────────────────────────────────────────────────
 local function assignSpectateTarget(spectator)
 	local designers = getActiveDesigners()
 	if #designers == 0 then
@@ -80,7 +81,6 @@ local function assignSpectateTarget(spectator)
 	local current = spectators[spectator.UserId]
 	local target
 
-	-- Pick next designer in rotation
 	if current and current.target then
 		local idx = 1
 		for i, p in ipairs(designers) do
@@ -96,16 +96,11 @@ local function assignSpectateTarget(spectator)
 	print("[SPECTATE] " .. spectator.Name .. " watching " .. target.Name)
 end
 
--- Cycle spectator view (called from client request)
-local CycleSpectate = Remotes:FindFirstChild("CycleSpectate") or Instance.new("RemoteEvent", Remotes)
-CycleSpectate.Name = "CycleSpectate"
-
 CycleSpectate.OnServerEvent:Connect(function(spectator)
 	if not isSpectator(spectator) then return end
 	assignSpectateTarget(spectator)
 end)
 
--- Auto-assign when player joins Lobby mid-round
 Players.PlayerAdded:Connect(function(p)
 	p.Changed:Connect(function(prop)
 		if prop == "Team" and roundActive then
@@ -118,10 +113,8 @@ Players.PlayerAdded:Connect(function(p)
 	end)
 end)
 
--------------------------------------------------
--- Betting
--------------------------------------------------
-PlaceBet.OnServerEvent:Connect(function(bettor, targetUserId, amount)
+-- ── Betting ───────────────────────────────────────────────────────────────────
+PlaceBet.OnServerEvent:Connect(function(bettor, targetUserId, _amount)
 	if not bettingOpen then
 		print("[BET] Betting is closed this round.")
 		return
@@ -132,22 +125,16 @@ PlaceBet.OnServerEvent:Connect(function(bettor, targetUserId, amount)
 		return
 	end
 
-	-- Validate amount
-	amount = BET_COST -- lock to fixed cost regardless of what client sends
-	if not _G.DataManager then
-		print("[BET] DataManager not available.")
-		return
-	end
+	-- Lock to fixed cost regardless of what client sends
+	local amount = BET_COST
 
-	-- Check coins
-	local coins = _G.DataManager.GetCoins(bettor)
+	local coins = DataManager.GetCoins(bettor)
 	if not coins or coins < amount then
 		print("[BET] " .. bettor.Name .. " cannot afford bet.")
 		BetResult:FireClient(bettor, false, "Not enough Coins!")
 		return
 	end
 
-	-- Find target
 	local targetPlayer
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p.UserId == targetUserId then targetPlayer = p break end
@@ -157,16 +144,14 @@ PlaceBet.OnServerEvent:Connect(function(bettor, targetUserId, amount)
 		return
 	end
 
-	_G.DataManager.AddCoins(bettor, -amount)
+	DataManager.AddCoins(bettor, -amount)
 	bets[bettor.UserId] = {target = targetPlayer, amount = amount}
 	SoundService.FireToClient(bettor, "BetPlaced")
 	BetResult:FireClient(bettor, true, "Bet placed on " .. targetPlayer.Name .. "!")
 	print("[BET] " .. bettor.Name .. " bet " .. amount .. " coins on " .. targetPlayer.Name)
 end)
 
--------------------------------------------------
--- Pay out bets at round end
--------------------------------------------------
+-- ── Bet resolution ────────────────────────────────────────────────────────────
 local function resolveBets(winningTeamName)
 	print("[BET] Resolving bets. Winning team: " .. tostring(winningTeamName))
 	for bettorUserId, betData in pairs(bets) do
@@ -175,9 +160,7 @@ local function resolveBets(winningTeamName)
 			local targetTeam = betData.target.Team
 			if targetTeam and targetTeam.Name == winningTeamName then
 				local payout = math.floor(betData.amount * BET_PAYOUT_MULTIPLIER)
-				if _G.DataManager then
-					_G.DataManager.AddCoins(bettor, payout)
-				end
+				DataManager.AddCoins(bettor, payout)
 				BetResult:FireClient(bettor, true, "You won! +" .. payout .. " Coins!")
 				print("[BET] " .. bettor.Name .. " won " .. payout .. " coins!")
 			else
@@ -188,46 +171,37 @@ local function resolveBets(winningTeamName)
 	bets = {}
 end
 
--------------------------------------------------
--- Round lifecycle
--------------------------------------------------
-StatusText:GetPropertyChangedSignal("Value"):Connect(function()
-	local val = StatusText.Value
+-- ── Round lifecycle via RoundEvents ──────────────────────────────────────────
+RoundEvents.RoundStarted.Event:Connect(function()
+	roundActive   = true
+	bettingOpen   = math.random() < BET_AVAILABILITY_CHANCE
 
-	if val == "Game Starting..." then
-		roundActive = true
-		-- Randomize bet availability per round
-		bettingOpen = math.random() < BET_AVAILABILITY_CHANCE
-		if not bettingOpen then
-			print("[BET] Betting CLOSED this round (randomized).")
-		end
-		-- Push bet targets to all current spectators/lobby players
-		for _, p in ipairs(Players:GetPlayers()) do
-			if isSpectator(p) then
-				assignSpectateTarget(p)
-				sendBetTargets(p)
-			end
-		end
+	if not bettingOpen then
+		print("[BET] Betting CLOSED this round (randomized).")
 	end
 
-	if val:find("Win") or val == "Round Over!" or val:find("Collection") then
-		roundActive = false
-		-- Determine winner and resolve
-		if val:find("Critics") then
-			resolveBets("Critics")
-		elseif val:find("Designers") or val:find("Collection") then
-			resolveBets("Designers")
-		else
-			bets = {}
-		end
-		spectators = {}
-		for _, p in ipairs(Players:GetPlayers()) do
-			StopSpectate:FireClient(p)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if isSpectator(p) then
+			assignSpectateTarget(p)
+			sendBetTargets(p)
 		end
 	end
 end)
 
+RoundEvents.RoundEnded.Event:Connect(function(winningTeamName)
+	roundActive = false
+	resolveBets(winningTeamName)
+	spectators  = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		StopSpectate:FireClient(p)
+	end
+end)
+
+RoundEvents.Intermission.Event:Connect(function()
+	bets = {}
+end)
+
 Players.PlayerRemoving:Connect(function(p)
 	spectators[p.UserId] = nil
-	bets[p.UserId] = nil
+	bets[p.UserId]       = nil
 end)
