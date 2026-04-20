@@ -1,4 +1,4 @@
- -- TagManager (Script in ServerScriptService)
+-- TagManager (Script in ServerScriptService)
 -- FIXED: All _G calls replaced with ServiceRegistry.Await / .Get
 -- Round reset uses RoundEvents. StatusText string matching removed.
 
@@ -7,6 +7,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Teams           = game:GetService("Teams")
 local TweenService    = game:GetService("TweenService")
 local ServerScriptService = game:GetService("ServerScriptService")
+local CollectionService = game:GetService("CollectionService")
 
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
 local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
@@ -271,7 +272,11 @@ local function freezePlayer(designer, critic)
 	prompt.ObjectText          = designer.Name
 	prompt.HoldDuration        = 0
 	prompt.RequiresLineOfSight = false
+	prompt.Enabled             = false -- CRITICAL: Start it hidden on the server
 	prompt.Parent              = promptPart
+
+	-- Apply the tag so your client script knows to show it to Designers
+	CollectionService:AddTag(prompt, "DesignerPrompt")
 
 	prompt.Triggered:Connect(function(rescuer)
 		if rescuer.Team and rescuer.Team.Name == DESIGNER_TEAM then
