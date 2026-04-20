@@ -1,6 +1,9 @@
 -- DailyLookbook (Script in ServerScriptService)
--- FIXED: ServiceRegistry replaces _G.DataManager and _G.GachaService
--- Also removed the fragile task.wait(3) — now uses ServiceRegistry.Await properly.
+-- FIXED:
+--   Simplified challenge pool to generic MVP stats only.
+--   No more hyper-specific event hooks ("Sabotage 2 racks", "Stun a Critic twice").
+--   New pool: Play Matches, Earn XP, Survive Minutes — all auto-tracked by existing systems.
+--   Resets every 24 hours.
 
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
@@ -23,16 +26,19 @@ local DailyChallengeUpdate = getRemote("DailyChallengeUpdate")
 
 local TWENTY_FOUR_HOURS = 86400
 
+-- ── Simplified MVP challenge pool ────────────────────────────────────────────
+-- All stats are generic and tracked by existing round/XP systems.
+-- DO NOT add hyper-specific hooks (sabotages, stuns, etc.) until post-launch.
 local ChallengeTemplates = {
-	{Id = "pass_5",        Desc = "Pass the fabric roll 5 times",    Goal = 5,  Stat = "Passes"},
-	{Id = "dunk_3",        Desc = "Dunk 3 fabric rolls in one match", Goal = 3,  Stat = "Dunks"},
-	{Id = "stun_critic_2", Desc = "Stun a Critic twice",              Goal = 2,  Stat = "Stuns"},
-	{Id = "unfreeze_2",    Desc = "Unfreeze 2 teammates",             Goal = 2,  Stat = "Rescues"},
-	{Id = "survive_3min",  Desc = "Survive 3 minutes in a round",     Goal = 3,  Stat = "SurvivalMins"},
-	{Id = "collect_5",     Desc = "Collect 5 fabric rolls",           Goal = 5,  Stat = "FabricCollects"},
-	{Id = "dash_10",       Desc = "Use Fashion Dash 10 times",        Goal = 10, Stat = "Dashes"},
-	{Id = "freeze_2",      Desc = "Freeze 2 Designers (as Critic)",   Goal = 2,  Stat = "Freezes"},
-	{Id = "sabotage_2",    Desc = "Sabotage 2 fabric racks",          Goal = 2,  Stat = "Sabotages"},
+	{Id = "play_3",       Desc = "Play 3 matches",        Goal = 3,   Stat = "MatchesPlayed"},
+	{Id = "play_5",       Desc = "Play 5 matches",        Goal = 5,   Stat = "MatchesPlayed"},
+	{Id = "earn_250xp",   Desc = "Earn 250 XP",           Goal = 250, Stat = "XPEarned"},
+	{Id = "earn_500xp",   Desc = "Earn 500 XP",           Goal = 500, Stat = "XPEarned"},
+	{Id = "earn_1000xp",  Desc = "Earn 1,000 XP",         Goal = 1000,Stat = "XPEarned"},
+	{Id = "survive_5min", Desc = "Survive 5 minutes total",Goal = 5,  Stat = "SurvivalMins"},
+	{Id = "survive_10min",Desc = "Survive 10 minutes total",Goal = 10, Stat = "SurvivalMins"},
+	{Id = "pass_3",       Desc = "Pass the fabric 3 times",Goal = 3,  Stat = "Passes"},
+	{Id = "pass_5",       Desc = "Pass the fabric 5 times",Goal = 5,  Stat = "Passes"},
 }
 
 local dailyData = {}  -- [userId] = runtime cache
@@ -46,6 +52,7 @@ local function getOrCreateDaily(player)
 	local needsReset  = not saved or (now - (saved.lastReset or 0)) >= TWENTY_FOUR_HOURS
 
 	if needsReset then
+		-- Shuffle and pick 3
 		local shuffled = {}
 		for _, t in ipairs(ChallengeTemplates) do table.insert(shuffled, t) end
 		for i = #shuffled, 2, -1 do
@@ -159,8 +166,6 @@ GetDailyChallenges.OnServerEvent:Connect(function(player)
 end)
 
 Players.PlayerAdded:Connect(function(player)
-	-- Profile is already loaded by the time we get here via Await above,
-	-- but we still yield a tick to let PlayerAdded in DataManager fire first.
 	task.defer(function()
 		getOrCreateDaily(player)
 		syncToClient(player)
