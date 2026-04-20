@@ -28,6 +28,7 @@ end
 
 local NotifyCritics        = getRemote("NotifyCritics")
 local UpdateFabricUI       = getRemote("UpdateFabricUI")
+local SetPromptVisible     = getRemote("SetPromptVisible") -- [designer-only] shows/hides designer prompts
 local TrendTrackerActivate = getRemote("TrendTrackerActivate")
 local PlayProximitySound   = getRemote("PlayProximitySound")
 local ShowExitWaypoint     = getRemote("ShowExitWaypoint")
@@ -84,6 +85,20 @@ local function setRackState(rack, sabotaged)
 
 	rack:SetAttribute("IsSabotaged", sabotaged)
 	RackStateChanged:FireAllClients(rack, sabotaged)
+end
+
+local function fireToDesigners(remote, ...)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Team and p.Team.Name == Config.DesignerTeamName then
+			remote:FireClient(p, ...)
+		end
+	end
+end
+
+local function setDesignerPromptVisible(prompt, visible)
+	-- Disable on server so critics never see it; show/hide only for designers
+	prompt.Enabled = false
+	fireToDesigners(SetPromptVisible, prompt, visible)
 end
 
 local function alertCritics(rack, isSabotageAlert)
@@ -175,10 +190,7 @@ local function unsabotageRack(rack)
 	if not rack or not rack.Parent then return end
 	setRackState(rack, false)
 	local dp = rack:FindFirstChild("DesignerPickup")
-	if dp then dp.HoldDuration = NORMAL_PICKUP_HOLD dp.ActionText = "Collect Fabric" dp.Enabled = true end
-	local cp = rack:FindFirstChild("CriticSabotage")
-	if cp then cp.Enabled = true end
-	tangleTimers[rack] = nil
+	if dp then dp.HoldDuration = NORMAL_PICKUP_HOLD dp.ActionText = "Collect Fabric" fireToDesigners(SetPromptVisible, dp, true) end
 
 	for _, queue in pairs(criticSabotageQueue) do
 		for i, r in ipairs(queue) do
@@ -203,7 +215,9 @@ local function setupFabricRack(rack)
 	dp.HoldDuration = NORMAL_PICKUP_HOLD
 	dp.RequiresLineOfSight   = false
 	dp.MaxActivationDistance = 8
+	dp.Enabled      = false  -- Hidden server-side; shown only to designers via SetPromptVisible
 	dp.Parent       = rack
+	fireToDesigners(SetPromptVisible, dp, true)
 
 	local cp        = Instance.new("ProximityPrompt")
 	cp.Name         = "CriticSabotage"
@@ -264,7 +278,8 @@ local function setupFabricRack(rack)
 		task.delay(RACK_COOLDOWN, function()
 			if not rack or not rack.Parent then return end
 			rack:SetAttribute("IsOnCooldown", false)
-			dp.Enabled = true
+			-- Re-show only for designers, not critics
+			fireToDesigners(SetPromptVisible, dp, true)
 			cp.Enabled = true
 			if regularFolder then
 				for _, p in ipairs(regularFolder:GetDescendants()) do
@@ -299,6 +314,8 @@ local function setupFabricRack(rack)
 
 		dp.HoldDuration = SABOTAGED_PICKUP_HOLD
 		dp.ActionText   = "Collect Fabric (TANGLED)"
+		-- Push updated ActionText to designers only
+		fireToDesigners(SetPromptVisible, dp, true)
 
 		RewardTracker.OnSabotage(critic)
 
@@ -387,7 +404,7 @@ local function resetAll()
 			rack:SetAttribute("IsSabotaged",  false)
 			setRackState(rack, false)
 			local dp = rack:FindFirstChild("DesignerPickup")
-			if dp then dp.HoldDuration = NORMAL_PICKUP_HOLD dp.ActionText = "Collect Fabric" dp.Enabled = true end
+			if dp then dp.HoldDuration = NORMAL_PICKUP_HOLD dp.ActionText = "Collect Fabric" fireToDesigners(SetPromptVisible, dp, true) end
 			local cp = rack:FindFirstChild("CriticSabotage")
 			if cp then cp.Enabled = true end
 			local rf = rack:FindFirstChild("RegularState")
