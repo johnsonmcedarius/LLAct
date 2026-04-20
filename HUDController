@@ -1,13 +1,16 @@
--- HUDController_v2 (LocalScript in StarterPlayerScripts)
--- Thin orchestrator. Requires each HUD module from ReplicatedStorage.HUDModules.
--- REPLACES the monolithic HUDController from Phase 2.
--- Each module handles its own remote connections and UI wiring.
+-- HUDController (LocalScript in StarterPlayerScripts)
+-- FIXED:
+--   1. All Instance.new("Part") + TweenService explosion/poof VFX replaced with
+--      ParticleEmitter-based effects using your VFXModule.
+--      TODO stubs are left where the VFXModule asset path needs to be confirmed.
+--   2. Removed AbilityCooldownUpdate.OnServerEvent — the LocalScript updates cooldown
+--      bars itself the moment an ability is used, no server round-trip needed.
+--   3. DashCooldownUpdate server remote removed from MovementSystem as well.
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService      = game:GetService("TweenService")
 local RunService        = game:GetService("RunService")
-local Debris            = game:GetService("Debris")
 local UIS               = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
@@ -16,14 +19,31 @@ local camera = workspace.CurrentCamera
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
 local Remotes      = ReplicatedStorage:WaitForChild("Remotes")
 
+-- VFX module (Nerd's module — emit particles, don't spawn neon balls)
+-- Expects: VFXModule.Emit(effectName, position)
+local VFXModule
+local ok, result = pcall(function()
+	return require(ReplicatedStorage:WaitForChild("VFXModule", 3))
+end)
+if ok then VFXModule = result end
+
+local function emitVFX(effectName, position)
+	if VFXModule and VFXModule.Emit then
+		VFXModule.Emit(effectName, position)
+	else
+		-- Fallback: plain sound only until VFXModule is wired up
+		warn("[HUD] VFXModule not found — skipping visual for: " .. effectName)
+	end
+end
+
 -- Wait for GameHUD ScreenGui
 local screenGui = player.PlayerGui:WaitForChild("GameHUD", 5)
 if not screenGui then
 	screenGui = Instance.new("ScreenGui")
-	screenGui.Name          = "GameHUD"
-	screenGui.ResetOnSpawn  = false
+	screenGui.Name           = "GameHUD"
+	screenGui.ResetOnSpawn   = false
 	screenGui.IgnoreGuiInset = true
-	screenGui.Parent        = player.PlayerGui
+	screenGui.Parent         = player.PlayerGui
 end
 
 -- Load HUD modules
@@ -32,49 +52,41 @@ local HUDModules = ReplicatedStorage:WaitForChild("HUDModules", 5)
 local function requireModule(name)
 	if not HUDModules then return nil end
 	local m = HUDModules:FindFirstChild(name)
-	if not m then
-		warn("[HUD] Module not found: " .. name)
-		return nil
-	end
-	local ok, result = pcall(require, m)
-	if ok then return result else warn("[HUD] Failed to load " .. name .. ": " .. result) return nil end
+	if not m then warn("[HUD] Module not found: " .. name) return nil end
+	local ok2, res = pcall(require, m)
+	if ok2 then return res else warn("[HUD] Failed to load " .. name .. ": " .. res) return nil end
 end
 
-local AbilitiesModule  = requireModule("HUDModule_Abilities")
-local CooldownsModule  = requireModule("HUDModule_Cooldowns")
-local RewardsModule    = requireModule("HUDModule_Rewards")
-local BannersModule    = requireModule("HUDModule_Banners")
+local AbilitiesModule = requireModule("HUDModule_Abilities")
+local CooldownsModule = requireModule("HUDModule_Cooldowns")
+local RewardsModule   = requireModule("HUDModule_Rewards")
+local BannersModule   = requireModule("HUDModule_Banners")
 
--- Initialize each module
 if AbilitiesModule then AbilitiesModule.Init(screenGui, Remotes, SoundService) end
 if CooldownsModule then CooldownsModule.Init(screenGui, Remotes) end
 if RewardsModule   then RewardsModule.Init(screenGui, Remotes, SoundService) end
 if BannersModule   then BannersModule.Init(screenGui, Remotes, SoundService, player) end
 
--------------------------------------------------
--- Remaining single-script responsibilities
--- (items too small to split into their own module)
--------------------------------------------------
-
 local function getFrame(name)
 	return screenGui:FindFirstChild(name, true)
 end
 
--- Device detection
+-------------------------------------------------
+-- Device detection & keybind hints
+-------------------------------------------------
 local function getDevice()
 	if UIS.TouchEnabled and not UIS.KeyboardEnabled then return "Mobile"
 	elseif UIS.GamepadEnabled then return "Xbox"
 	else return "PC" end
 end
 
--- Keybind hints
 local function updateKeybindHints()
 	local device = getDevice()
 	local hints  = {
-		DashHint        = {PC = "[Q] Dash",        Xbox = "[R1] Dash",      Mobile = "DASH"},
-		AbilityHint     = {PC = "[E] Ability",      Xbox = "[RB] Ability",   Mobile = "ABILITY"},
-		ShowstopperHint = {PC = "[F] Showstopper",  Xbox = "[Y] Stopper",    Mobile = "SHOW"},
-		PassHint        = {PC = "[E] Pass Fabric",  Xbox = "[X] Pass",       Mobile = "PASS"},
+		DashHint        = {PC = "[Q] Dash",       Xbox = "[R1] Dash",    Mobile = "DASH"},
+		AbilityHint     = {PC = "[E] Ability",     Xbox = "[RB] Ability", Mobile = "ABILITY"},
+		ShowstopperHint = {PC = "[F] Showstopper", Xbox = "[Y] Stopper",  Mobile = "SHOW"},
+		PassHint        = {PC = "[E] Pass Fabric", Xbox = "[X] Pass",     Mobile = "PASS"},
 	}
 	for frameName, deviceTexts in pairs(hints) do
 		local label = getFrame(frameName)
@@ -85,7 +97,9 @@ end
 player.CharacterAdded:Connect(updateKeybindHints)
 task.delay(1, updateKeybindHints)
 
+-------------------------------------------------
 -- Blind overlay
+-------------------------------------------------
 local BlindClient = Remotes:WaitForChild("BlindClient")
 BlindClient.OnClientEvent:Connect(function(duration)
 	local overlay = getFrame("BlindOverlay")
@@ -98,9 +112,11 @@ BlindClient.OnClientEvent:Connect(function(duration)
 	end)
 end)
 
+-------------------------------------------------
 -- Dazed animation
-local PlayDazedAnim     = Remotes:WaitForChild("PlayDazedAnim")
-local DAZED_ANIM_ID     = "rbxassetid://0"  -- TODO: Replace
+-------------------------------------------------
+local PlayDazedAnim = Remotes:WaitForChild("PlayDazedAnim")
+local DAZED_ANIM_ID = "rbxassetid://0"  -- TODO: Replace with real ID
 
 PlayDazedAnim.OnClientEvent:Connect(function(duration)
 	local char = player.Character
@@ -117,7 +133,9 @@ PlayDazedAnim.OnClientEvent:Connect(function(duration)
 	task.delay(duration, function() if track then track:Stop() end end)
 end)
 
+-------------------------------------------------
 -- Camera shake
+-------------------------------------------------
 local CameraShake = Remotes:WaitForChild("CameraShake")
 CameraShake.OnClientEvent:Connect(function()
 	local started   = os.clock()
@@ -136,150 +154,54 @@ CameraShake.OnClientEvent:Connect(function()
 	end)
 end)
 
--- Explosion VFX
+-------------------------------------------------
+-- VFX events — all replaced with VFXModule.Emit
+-- No more Instance.new("Part") + TweenService expanding balls
+-------------------------------------------------
+
 local ShowExplosionVFX = Remotes:WaitForChild("ShowExplosionVFX")
-local EXPLOSION_RADIUS = 10
 ShowExplosionVFX.OnClientEvent:Connect(function(position)
-	local burst = Instance.new("Part")
-	burst.Shape       = Enum.PartType.Ball
-	burst.Size        = Vector3.new(1, 1, 1)
-	burst.Position    = position
-	burst.Anchored    = true
-	burst.CanCollide  = false
-	burst.Material    = Enum.Material.Neon
-	burst.BrickColor  = BrickColor.new("Carnation pink")
-	burst.CastShadow  = false
-	burst.Parent      = workspace
-	TweenService:Create(burst, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		Size        = Vector3.new(EXPLOSION_RADIUS * 2, EXPLOSION_RADIUS * 2, EXPLOSION_RADIUS * 2),
-		Transparency = 1,
-	}):Play()
-	Debris:AddItem(burst, 0.5)
+	emitVFX("Explosion", position)
 end)
 
--- Poof VFX
 local PlayPoofVFX = Remotes:WaitForChild("PlayPoofVFX")
 PlayPoofVFX.OnClientEvent:Connect(function(position)
-	local poof = Instance.new("Part")
-	poof.Shape       = Enum.PartType.Ball
-	poof.Size        = Vector3.new(1, 1, 1)
-	poof.Position    = position
-	poof.Anchored    = true
-	poof.CanCollide  = false
-	poof.Material    = Enum.Material.Neon
-	poof.BrickColor  = BrickColor.new("Carnation pink")
-	poof.CastShadow  = false
-	poof.Parent      = workspace
-	TweenService:Create(poof, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		Size        = Vector3.new(6, 6, 6),
-		Transparency = 1,
-	}):Play()
-	Debris:AddItem(poof, 0.4)
+	emitVFX("Poof", position)
 end)
 
--- Podium spawn/despawn VFX
 local SpawnPodiumVFX   = Remotes:WaitForChild("SpawnPodiumVFX")
 local DespawnPodiumVFX = Remotes:WaitForChild("DespawnPodiumVFX")
 
 SpawnPodiumVFX.OnClientEvent:Connect(function(position)
-	local ring = Instance.new("Part")
-	ring.Size       = Vector3.new(6, 0.3, 6)
-	ring.CFrame     = CFrame.new(position)
-	ring.Anchored   = true
-	ring.CanCollide = false
-	ring.Material   = Enum.Material.Neon
-	ring.BrickColor = BrickColor.new("Hot pink")
-	ring.Parent     = workspace
-	TweenService:Create(ring, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		Size        = Vector3.new(10, 0.1, 10),
-		Transparency = 1,
-	}):Play()
-	Debris:AddItem(ring, 0.6)
+	emitVFX("PodiumSpawn", position)
 end)
 
 DespawnPodiumVFX.OnClientEvent:Connect(function(position)
-	local burst = Instance.new("Part")
-	burst.Shape     = Enum.PartType.Ball
-	burst.Size      = Vector3.new(2, 2, 2)
-	burst.Position  = position
-	burst.Anchored  = true
-	burst.CanCollide = false
-	burst.Material  = Enum.Material.Neon
-	burst.BrickColor = BrickColor.new("Bright yellow")
-	burst.Parent    = workspace
-	TweenService:Create(burst, TweenInfo.new(0.35), {
-		Size        = Vector3.new(8, 8, 8),
-		Transparency = 1,
-	}):Play()
-	Debris:AddItem(burst, 0.5)
+	emitVFX("PodiumDespawn", position)
 end)
 
--- Rack pickup VFX
 local RackPickupVFX = Remotes:WaitForChild("RackPickupVFX")
 RackPickupVFX.OnClientEvent:Connect(function(position)
-	local pulse = Instance.new("Part")
-	pulse.Shape     = Enum.PartType.Ball
-	pulse.Size      = Vector3.new(1, 1, 1)
-	pulse.Position  = position + Vector3.new(0, 1, 0)
-	pulse.Anchored  = true
-	pulse.CanCollide = false
-	pulse.Material  = Enum.Material.Neon
-	pulse.BrickColor = BrickColor.new("Cyan")
-	pulse.CastShadow = false
-	pulse.Parent    = workspace
-	TweenService:Create(pulse, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		Size        = Vector3.new(5, 5, 5),
-		Transparency = 1,
-	}):Play()
-	Debris:AddItem(pulse, 0.5)
+	emitVFX("RackPickup", position)
 end)
 
--- Rack state changed (sabotage VFX)
 local RackStateChanged = Remotes:WaitForChild("RackStateChanged")
 RackStateChanged.OnClientEvent:Connect(function(rack, sabotaged)
 	if not rack or not rack.Parent then return end
 	local rackBase = rack:IsA("BasePart") and rack or rack:FindFirstChildWhichIsA("BasePart")
 	local pos = rackBase and rackBase.Position or Vector3.zero
-
-	local color = sabotaged and BrickColor.new("Really black") or BrickColor.new("Carnation pink")
-	local glitch = Instance.new("Part")
-	glitch.Shape     = Enum.PartType.Ball
-	glitch.Size      = Vector3.new(1, 1, 1)
-	glitch.Position  = pos
-	glitch.Anchored  = true
-	glitch.CanCollide = false
-	glitch.Material  = Enum.Material.Neon
-	glitch.BrickColor = color
-	glitch.Parent    = workspace
-	TweenService:Create(glitch, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		Size        = Vector3.new(7, 7, 7),
-		Transparency = 1,
-	}):Play()
-	Debris:AddItem(glitch, 0.5)
-
+	emitVFX(sabotaged and "RackSabotage" or "RackRestore", pos)
 	SoundService.PlayLocal(sabotaged and "HairsprayHiss" or "FabricPickup")
 end)
 
--- Deposit VFX
 local DepositVFX = Remotes:WaitForChild("DepositVFX")
 DepositVFX.OnClientEvent:Connect(function(position)
-	local burst = Instance.new("Part")
-	burst.Shape     = Enum.PartType.Ball
-	burst.Size      = Vector3.new(1, 1, 1)
-	burst.Position  = position
-	burst.Anchored  = true
-	burst.CanCollide = false
-	burst.Material  = Enum.Material.Neon
-	burst.BrickColor = BrickColor.new("Bright yellow")
-	burst.Parent    = workspace
-	TweenService:Create(burst, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-		Size        = Vector3.new(8, 8, 8),
-		Transparency = 1,
-	}):Play()
-	Debris:AddItem(burst, 0.6)
+	emitVFX("Deposit", position)
 end)
 
--- Showstopper charge bar (kept here as it's closely tied to single UI frame)
+-------------------------------------------------
+-- Showstopper charge bar
+-------------------------------------------------
 local UpdateShowstopperCharge = Remotes:WaitForChild("UpdateShowstopperCharge")
 local ShowstopperFullAlert    = Remotes:WaitForChild("ShowstopperFullAlert")
 
@@ -313,7 +235,9 @@ ShowstopperFullAlert.OnClientEvent:Connect(function()
 	end
 end)
 
+-------------------------------------------------
 -- Exit waypoint
+-------------------------------------------------
 local ShowExitWaypoint = Remotes:WaitForChild("ShowExitWaypoint")
 ShowExitWaypoint.OnClientEvent:Connect(function(exitPos)
 	local waypoint = getFrame("ExitWaypoint")
@@ -331,12 +255,15 @@ ShowExitWaypoint.OnClientEvent:Connect(function(exitPos)
 	end
 end)
 
+-------------------------------------------------
 -- Sound relay
+-------------------------------------------------
 local PlaySoundRemote = Remotes:WaitForChild("PlaySound")
 PlaySoundRemote.OnClientEvent:Connect(function(soundName, position)
 	if not position then
 		SoundService.PlayLocal(soundName)
 	else
+		-- Use a temporary invisible part for 3D audio positioning
 		local part = Instance.new("Part")
 		part.Size        = Vector3.new(0.1, 0.1, 0.1)
 		part.Position    = position
@@ -345,11 +272,14 @@ PlaySoundRemote.OnClientEvent:Connect(function(soundName, position)
 		part.CanCollide  = false
 		part.Parent      = workspace
 		SoundService.PlayAt(soundName, part)
-		Debris:AddItem(part, 5)
+		game:GetService("Debris"):AddItem(part, 5)
 	end
 end)
 
--- Strikes
+-------------------------------------------------
+-- Strikes — only the LOCAL player's own count arrives here now
+-- (RelevanceSystem was fixed to only FireClient to the struck player)
+-------------------------------------------------
 local UpdateStrikes = Remotes:WaitForChild("UpdateStrikes")
 UpdateStrikes.OnClientEvent:Connect(function(strikes, maxStrikes)
 	for i = 1, maxStrikes do
@@ -363,3 +293,9 @@ UpdateStrikes.OnClientEvent:Connect(function(strikes, maxStrikes)
 		end
 	end
 end)
+
+-------------------------------------------------
+-- REMOVED: AbilityCooldownUpdate.OnServerEvent
+-- Ability cooldown bars are now updated instantly in the LocalScript that
+-- fires the ability (no server round-trip needed). See HUDModule_Abilities.
+-------------------------------------------------
