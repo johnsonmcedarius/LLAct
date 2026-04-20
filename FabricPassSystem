@@ -1,13 +1,20 @@
+-- FabricPassSystem (Script in ServerScriptService)
+-- FIXED:
+--   1. Removed the while-true server loop that created/destroyed ProximityPrompts every 0.3s
+--   2. ProximityPrompt is now created ONCE when a player picks up FBRoll (via ChildAdded),
+--      and destroyed when they lose it (ChildRemoved). Zero per-frame work.
+--   3. Added a per-player server-side debounce to block exploit spam on PassFabric remote.
+--   4. CollectionService tag "DesignerPrompt" is applied to every prompt so other systems
+--      can find them without searching the workspace hierarchy.
+
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
+local CollectionService   = game:GetService("CollectionService")
 
-local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
-
--- Await hard dependencies
+local ServiceRegistry    = require(ServerScriptService:WaitForChild("ServiceRegistry"))
 local ShowstopperService = ServiceRegistry.Await("ShowstopperService")
-
-local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
+local SoundService       = require(ReplicatedStorage:WaitForChild("SoundService"))
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
@@ -21,15 +28,16 @@ local PassFabric      = getRemote("PassFabric")
 local PlayPoofVFX     = getRemote("PlayPoofVFX")
 local SetTeammateGlow = getRemote("SetTeammateGlow")
 local ShowRewardPopup = getRemote("ShowRewardPopup")
-local SetPromptVisible = getRemote("SetPromptVisible") -- fires only to designers
 
 local PASS_RANGE     = 15
 local DESIGNER_TEAM  = "Designers"
-local SCAN_INTERVAL  = 0.3
-local IS_PASSING_DUR = 0.5
+local PASS_DEBOUNCE  = 1  -- seconds between allowed passes per player
 
--- [holderUserId][targetUserId] = prompt
-local passPrompts = {}
+-- [userId] = last pass timestamp
+local lastPassTime = {}
+
+-- [holderUserId] = { connection, prompt }
+local holderData = {}
 
 local function getFabricTool(player)
 	return (player.Character and player.Character:FindFirstChild("FBRoll"))
@@ -40,44 +48,42 @@ local function getRoot(player)
 	return player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 end
 
-local function getTeammatesInRange(holder, range)
-	local hr = getRoot(holder)
-	if not hr then return {} end
-	local nearby = {}
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p == holder then continue end
-		if not (p.Team and p.Team.Name == DESIGNER_TEAM) then continue end
-		local pr = getRoot(p)
-		if pr and (hr.Position - pr.Position).Magnitude <= range then
-			table.insert(nearby, p)
-		end
-	end
-	return nearby
-end
-
--- ── The Logic (Moved to a shared function) ──────────────────────────────────
+-------------------------------------------------
+-- Core pass logic (server-authoritative)
+-------------------------------------------------
 local function executePass(holder, targetPlayer)
+	-- Team checks
 	if not (holder.Team and holder.Team.Name == DESIGNER_TEAM) then return end
 	if not (targetPlayer and targetPlayer.Team and targetPlayer.Team.Name == DESIGNER_TEAM) then return end
 	if holder == targetPlayer then return end
 
+	-- Debounce: prevent exploit spam
+	local now = os.clock()
+	if (lastPassTime[holder.UserId] or 0) + PASS_DEBOUNCE > now then
+		print("[PASS] Debounce blocked rapid fire from " .. holder.Name)
+		return
+	end
+	lastPassTime[holder.UserId] = now
+
+	-- Inventory check
 	local fabricTool = getFabricTool(holder)
 	if not fabricTool then return end
 
+	-- Distance check (server-side, cannot be spoofed)
 	local hr = getRoot(holder)
 	local tr = getRoot(targetPlayer)
 	if not hr or not tr then return end
-
-	-- Exploit check
 	if (hr.Position - tr.Position).Magnitude > PASS_RANGE + 10 then return end
+
+	-- Don't double-pass to someone who already has one
 	if getFabricTool(targetPlayer) then return end
 
 	print("[PASS] " .. holder.Name .. " -> " .. targetPlayer.Name)
 
-	-- Visual feedback
+	-- Visual feedback flag
 	if holder.Character then
 		holder.Character:SetAttribute("IsPassing", true)
-		task.delay(IS_PASSING_DUR, function()
+		task.delay(0.5, function()
 			if holder.Character then holder.Character:SetAttribute("IsPassing", nil) end
 		end)
 	end
@@ -85,15 +91,15 @@ local function executePass(holder, targetPlayer)
 	PlayPoofVFX:FireAllClients(hr.Position)
 	SoundService.FireToAll("FabricPass", hr.Position)
 
-	-- INVENTORY TO INVENTORY PASS
+	-- Move tool
 	fabricTool.Parent = targetPlayer.Backpack
 
 	task.wait(0.1)
-	if tr then PlayPoofVFX:FireAllClients(tr.Position) end
+	if tr and tr.Parent then PlayPoofVFX:FireAllClients(tr.Position) end
 
 	ShowstopperService.OnFabricPass(holder, targetPlayer)
 
-	-- Optional DailyLookbook
+	-- DailyLookbook progress (generic "Passes" stat)
 	local lb = ServiceRegistry.Get("DailyLookbook")
 	if lb then
 		lb.AddProgress(holder,       "Passes", 1)
@@ -104,84 +110,118 @@ local function executePass(holder, targetPlayer)
 	ShowRewardPopup:FireClient(targetPlayer, "+10 Showstopper", "")
 end
 
--- Remote still works for manual/client triggers
+-- Remote handler (client-triggered via ProximityPrompt in FabricPassController)
 PassFabric.OnServerEvent:Connect(executePass)
 
--- ── Pass Management ──────────────────────────────────────────────────────────
-local function updatePassSystem()
-	for _, holder in ipairs(Players:GetPlayers()) do
-		local uid = holder.UserId
-		passPrompts[uid] = passPrompts[uid] or {}
+-------------------------------------------------
+-- Prompt lifecycle: create when player has FBRoll, destroy when they lose it
+-- This replaces the old while-true scanning loop entirely.
+-------------------------------------------------
+local function createPassPromptForHolder(holder)
+	-- Clean up any old prompt first
+	local old = holderData[holder.UserId]
+	if old then
+		if old.prompt and old.prompt.Parent then old.prompt:Destroy() end
+		if old.conn then old.conn:Disconnect() end
+		holderData[holder.UserId] = nil
+	end
 
-		local hasFabric  = getFabricTool(holder) ~= nil
-		local holderRoot = getRoot(holder)
+	local hr = getRoot(holder)
+	if not hr then return end
 
-		if hasFabric and holderRoot and (holder.Team and holder.Team.Name == DESIGNER_TEAM) then
-			local nearby = getTeammatesInRange(holder, PASS_RANGE)
-			SetTeammateGlow:FireClient(holder, nearby, true)
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ActionText            = "Give Fabric"
+	prompt.ObjectText            = "Pass Fabric"
+	prompt.HoldDuration          = 0
+	prompt.MaxActivationDistance = PASS_RANGE
+	prompt.RequiresLineOfSight   = false
+	-- Tag it so other systems (and the client glow script) can find it
+	CollectionService:AddTag(prompt, "DesignerPrompt")
+	prompt.Parent = hr
 
-			-- Create/Update prompts on nearby teammates
-			local currentNearbyIds = {}
-			for _, teammate in ipairs(nearby) do
-				local tUid = teammate.UserId
-				currentNearbyIds[tUid] = true
-
-				if not passPrompts[uid][tUid] then
-					local tRoot = getRoot(teammate)
-					if tRoot then
-						local prompt = Instance.new("ProximityPrompt")
-						prompt.ActionText   = "Give Fabric"
-						prompt.ObjectText   = "Pass to " .. teammate.Name
-						prompt.HoldDuration = 0
-						prompt.MaxActivationDistance = 8
-						prompt.RequiresLineOfSight   = false
-						prompt.Enabled      = false  -- Hidden server-side; critics won't see it
-						prompt.Parent = tRoot
-						-- Show only to the holder (the one with the fabric roll)
-						SetPromptVisible:FireClient(holder, prompt, true)
-
-						prompt.Triggered:Connect(function(playerWhoTriggered)
-							-- Only the person holding the fabric can trigger this specific pass
-							if playerWhoTriggered == holder then
-								executePass(holder, teammate)
-							end
-						end)
-						passPrompts[uid][tUid] = prompt
-					end
-				end
+	local conn = prompt.Triggered:Connect(function(playerWhoTriggered)
+		-- Only the holder themselves should be triggering this
+		if playerWhoTriggered ~= holder then return end
+		-- Find nearest valid teammate
+		local closestTeammate = nil
+		local closestDist     = PASS_RANGE + 1
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p == holder then continue end
+			if not (p.Team and p.Team.Name == DESIGNER_TEAM) then continue end
+			local pr = getRoot(p)
+			if not pr then continue end
+			local dist = (hr.Position - pr.Position).Magnitude
+			if dist < closestDist then
+				closestDist     = dist
+				closestTeammate = p
 			end
-
-			-- Cleanup teammates who moved out of range
-			for tUid, prompt in pairs(passPrompts[uid]) do
-				if not currentNearbyIds[tUid] then
-					if prompt then prompt:Destroy() end
-					passPrompts[uid][tUid] = nil
-				end
-			end
-		else
-			-- Holder lost fabric or isn't a designer: wipe their prompts
-			SetTeammateGlow:FireClient(holder, {}, false)
-			for tUid, prompt in pairs(passPrompts[uid]) do
-				if prompt then prompt:Destroy() end
-			end
-			passPrompts[uid] = {}
 		end
+		if closestTeammate then
+			executePass(holder, closestTeammate)
+		end
+	end)
+
+	holderData[holder.UserId] = {prompt = prompt, conn = conn}
+end
+
+local function destroyPassPromptForHolder(holder)
+	local data = holderData[holder.UserId]
+	if not data then return end
+	if data.conn   then data.conn:Disconnect() end
+	if data.prompt and data.prompt.Parent then data.prompt:Destroy() end
+	holderData[holder.UserId] = nil
+	-- Clear glow for this holder
+	SetTeammateGlow:FireClient(holder, {}, false)
+end
+
+-------------------------------------------------
+-- Watch each player's Backpack and Character for FBRoll
+-------------------------------------------------
+local function watchPlayer(player)
+	local function onChildAdded(child)
+		if child.Name == "FBRoll" and (player.Team and player.Team.Name == DESIGNER_TEAM) then
+			createPassPromptForHolder(player)
+		end
+	end
+
+	local function onChildRemoved(child)
+		if child.Name == "FBRoll" then
+			destroyPassPromptForHolder(player)
+		end
+	end
+
+	-- Watch Backpack
+	player.Backpack.ChildAdded:Connect(onChildAdded)
+	player.Backpack.ChildRemoved:Connect(onChildRemoved)
+
+	-- Watch Character (tool can be equipped into character)
+	local function watchCharacter(char)
+		char.ChildAdded:Connect(onChildAdded)
+		char.ChildRemoved:Connect(onChildRemoved)
+	end
+
+	player.CharacterAdded:Connect(function(char)
+		-- Clean up prompt on respawn
+		destroyPassPromptForHolder(player)
+		watchCharacter(char)
+	end)
+
+	if player.Character then
+		watchCharacter(player.Character)
+	end
+
+	-- Check if they already have the tool right now
+	if getFabricTool(player) and (player.Team and player.Team.Name == DESIGNER_TEAM) then
+		createPassPromptForHolder(player)
 	end
 end
 
-task.spawn(function()
-	while true do
-		task.wait(SCAN_INTERVAL)
-		updatePassSystem()
-	end
-end)
+Players.PlayerAdded:Connect(watchPlayer)
+for _, p in ipairs(Players:GetPlayers()) do
+	watchPlayer(p)
+end
 
 Players.PlayerRemoving:Connect(function(p)
-	local uid = p.UserId
-	if passPrompts[uid] then
-		for _, prompt in pairs(passPrompts[uid]) do
-			if prompt then prompt:Destroy() end
-		end
-		passPrompts[uid] = nil
-	end
+	destroyPassPromptForHolder(p)
+	lastPassTime[p.UserId] = nil
 end)
