@@ -1,0 +1,414 @@
+local Players         = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Teams           = game:GetService("Teams")
+local TweenService    = game:GetService("TweenService")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
+
+-- Await hard deps; optional deps resolved at call time via Get()
+local ShowstopperService = ServiceRegistry.Await("ShowstopperService")
+local RewardTracker      = ServiceRegistry.Await("RewardTracker")
+
+local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
+
+local Assets        = ReplicatedStorage:WaitForChild("Assets")
+local Podiums       = Assets:WaitForChild("Podiums")
+local EffectsFolder = Assets:FindFirstChild("Effects")
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+local function getRemote(name)
+	local r = Remotes:FindFirstChild(name)
+	if not r then r = Instance.new("RemoteEvent", Remotes) r.Name = name end
+	return r
+end
+
+local SpawnPodiumVFX    = getRemote("SpawnPodiumVFX")
+local DespawnPodiumVFX  = getRemote("DespawnPodiumVFX")
+local UpdateCancelTimer = getRemote("UpdateCancelTimer")
+local ShowRewardPopup   = getRemote("ShowRewardPopup")
+
+local CANCELLATION_TIME   = 60
+local ANTI_CAMP_DISTANCE  = 15
+local DUNK_DENIED_RANGE   = 5
+local DESIGNER_TEAM       = "Designers"
+local CRITIC_TEAM         = "Critics"
+local TEXTURE_SCROLL_SPEED = 50
+
+-- State variables
+local frozenPlayers = {}
+local processingFreeze = {} -- The spam fix
+
+local StaticEffects = {
+	White = {Color = Color3.new(1, 1, 1),            Material = Enum.Material.SmoothPlastic},
+	Lava  = {Color = Color3.fromRGB(255, 85, 0),     Material = Enum.Material.Neon},
+	Gold  = {Color = Color3.fromRGB(255, 215, 0),    Material = Enum.Material.Metal},
+	Ice   = {Color = Color3.fromRGB(150, 235, 255),  Material = Enum.Material.Ice},
+}
+
+-- ── Freeze visuals (unchanged logic) ─────────────────────────────────────────
+local function applyFreezeVisuals(designer, effectName)
+	local char       = designer.Character
+	local visualData = {}
+	local template   = EffectsFolder and EffectsFolder:FindFirstChild(effectName)
+
+	if effectName == "White" or not template then
+		local effect = StaticEffects[effectName] or StaticEffects["White"]
+		for _, child in ipairs(char:GetDescendants()) do
+			if child:IsA("BasePart") and not child:FindFirstAncestorOfClass("Accessory") then
+				visualData[child] = {Color = child.Color, Material = child.Material, Textures = {}}
+				child.Color    = effect.Color
+				child.Material = effect.Material
+			end
+		end
+		return visualData
+	end
+
+	local templateTextures, templateScripts = {}, {}
+	for _, item in ipairs(template:GetChildren()) do
+		if item:IsA("Texture") or item:IsA("Decal") then
+			table.insert(templateTextures, item)
+		elseif item:IsA("Script") or item:IsA("LocalScript") or item:IsA("ModuleScript") then
+			table.insert(templateScripts, item)
+		end
+	end
+
+	local baseEffect = StaticEffects[effectName]
+
+	for _, child in ipairs(char:GetDescendants()) do
+		if not child:IsA("BasePart") then continue end
+		if child:FindFirstAncestorOfClass("Accessory") then continue end
+
+		visualData[child] = {Color = child.Color, Material = child.Material, Textures = {}}
+
+		if baseEffect then
+			child.Color    = baseEffect.Color
+			child.Material = baseEffect.Material
+		end
+
+		local clonedTextures = {}
+		for _, tex in ipairs(templateTextures) do
+			local clone = tex:Clone()
+			clone.Parent = child
+			table.insert(clonedTextures, clone)
+			if clone:IsA("Texture") then
+				local tileSize  = clone.StudsPerTileU > 0 and clone.StudsPerTileU or 4
+				local cycleSecs = tileSize / TEXTURE_SCROLL_SPEED
+				local t = TweenService:Create(
+					clone,
+					TweenInfo.new(cycleSecs, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, -1, false),
+					{OffsetStudsU = clone.StudsPerTileU, OffsetStudsV = clone.StudsPerTileV}
+				)
+				t:Play()
+				table.insert(clonedTextures, t)
+			end
+		end
+		visualData[child].Textures = clonedTextures
+	end
+
+	for _, s in ipairs(templateScripts) do
+		local clone = s:Clone()
+		clone.Parent = char
+		if not visualData["_scripts"] then visualData["_scripts"] = {} end
+		table.insert(visualData["_scripts"], clone)
+	end
+
+	return visualData
+end
+
+local function restoreVisuals(data)
+	for part, props in pairs(data) do
+		if part == "_scripts" then
+			for _, s in ipairs(props) do if s and s.Parent then s:Destroy() end end
+			continue
+		end
+		if not (typeof(part) == "Instance" and part:IsA("BasePart")) then continue end
+		if not part.Parent then continue end
+		part.Color    = props.Color
+		part.Material = props.Material
+		if props.Textures then
+			for _, item in ipairs(props.Textures) do
+				if typeof(item) == "Instance" and item.Parent then
+					item:Destroy()
+				elseif typeof(item) == "table" and item.Cancel then
+					item:Cancel()
+				end
+			end
+		end
+	end
+end
+
+-- ── Countdown billboard ───────────────────────────────────────────────────────
+local function createCountdownBillboard(root)
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name        = "CancelCountdown"
+	billboard.Size        = UDim2.fromOffset(120, 40)
+	billboard.StudsOffset = Vector3.new(0, 4, 0)
+	billboard.AlwaysOnTop = false
+	billboard.MaxDistance = 40
+	billboard.Parent      = root
+
+	local label = Instance.new("TextLabel")
+	label.Name               = "TimerLabel"
+	label.Size               = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.TextColor3         = Color3.fromRGB(255, 80, 80)
+	label.TextStrokeTransparency = 0.5
+	label.TextStrokeColor3   = Color3.new(0, 0, 0)
+	label.Font               = Enum.Font.GothamBold
+	label.TextScaled         = true
+	label.Text               = "60s"
+	label.Parent             = billboard
+
+	return billboard, label
+end
+
+-- ── Unfreeze ── ──────────────────────────────────────────────────────────────────
+local function unfreezePlayer(targetPlayer, rescuer)
+	local data = frozenPlayers[targetPlayer.UserId]
+	if not data then return end
+
+	print("[TAG] Unfreezing: " .. targetPlayer.Name)
+	restoreVisuals(data.OriginalVisuals)
+
+	if data.Podium then
+		DespawnPodiumVFX:FireAllClients(data.Podium:GetPivot().Position)
+		SoundService.FireToAll("PodiumDespawn", data.Podium:GetPivot().Position)
+		data.Podium:Destroy()
+	end
+	if data.PoseAnim  then data.PoseAnim:Stop() end
+	if data.Countdown then data.Countdown:Destroy() end
+
+	local root = targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+	if root then root.Anchored = false end
+
+	SoundService.FireToAll("PlayerUnfrozen", root and root.Position or Vector3.zero)
+
+	if rescuer then
+		ShowstopperService.OnTeamRescue(rescuer)
+		RewardTracker.OnUnfreezeAlly(rescuer)
+	end
+
+	frozenPlayers[targetPlayer.UserId] = nil
+	ReplicatedStorage:SetAttribute("AllDesignersFrozen", false)
+end
+
+-- ── Freeze ────────────────────────────────────────────────────────────────────
+local function checkTotalFreeze()
+	local designers   = Teams:WaitForChild(DESIGNER_TEAM):GetPlayers()
+	local frozenCount = 0
+	for _ in pairs(frozenPlayers) do frozenCount += 1 end
+	if frozenCount >= #designers and #designers > 0 then
+		print("[GAME OVER] All designers frozen.")
+		ReplicatedStorage:SetAttribute("AllDesignersFrozen", true)
+	end
+end
+
+local function freezePlayer(designer, critic)
+	-- CHECK 1: Already frozen?
+	if frozenPlayers[designer.UserId] then return end
+	-- CHECK 2: Already being processed (the spam fix)?
+	if processingFreeze[designer.UserId] then return end
+
+	processingFreeze[designer.UserId] = true
+
+	local char = designer.Character
+	local root = char:FindFirstChild("HumanoidRootPart")
+	local hum  = char:FindFirstChild("Humanoid")
+
+	if not root or not hum then 
+		processingFreeze[designer.UserId] = nil 
+		return 
+	end
+
+	-- Remove weapons/tools
+	local toolInChar = char:FindFirstChild("FBRoll")
+	local toolInBp   = designer.Backpack:FindFirstChild("FBRoll")
+	if toolInChar then toolInChar:Destroy() end
+	if toolInBp   then toolInBp:Destroy()   end
+
+	root.Anchored = true
+
+	-- Strikes and Rewards
+	local relevance = ServiceRegistry.Get("RelevanceSystem")
+	if relevance then relevance.AddStrike(designer) end
+	RewardTracker.OnPlayerFrozen(designer)
+
+	-- Visuals
+	local effectName   = designer:GetAttribute("EquippedFreezeEffect") or "White"
+	local savedVisuals = applyFreezeVisuals(designer, effectName)
+
+	-- Podium setup
+	local podiumName     = designer:GetAttribute("EquippedPodium") or "BasicPodium"
+	local podiumTemplate = Podiums:FindFirstChild(podiumName) or Podiums:FindFirstChild("BasicPodium")
+	local podium         = podiumTemplate:Clone()
+
+	local rp = RaycastParams.new()
+	rp.FilterDescendantsInstances = {char, podium}
+	rp.FilterType = Enum.RaycastFilterType.Exclude
+
+	local ray    = workspace:Raycast(root.Position + Vector3.new(0, 2, 0), Vector3.new(0, -20, 0), rp)
+	local floorY = ray and ray.Position.Y or (root.Position.Y - 3)
+
+	local standPoint = podium:FindFirstChild("StandPoint", true)
+	if standPoint then
+		podium.Parent = workspace
+		local standWorld = standPoint.WorldPosition
+		local pivotWorld = podium:GetPivot().Position
+		local offset     = pivotWorld - standWorld
+		podium:PivotTo(CFrame.new(root.Position.X + offset.X, floorY, root.Position.Z + offset.Z)
+			* CFrame.Angles(0, math.rad(root.Orientation.Y), 0))
+		root.CFrame = standPoint.WorldCFrame
+	else
+		local mCF, mSize = podium:GetBoundingBox()
+		local pivotPos   = podium:GetPivot().Position
+		local btp        = pivotPos.Y - (mCF.Position.Y - mSize.Y / 2)
+		podium:PivotTo(CFrame.new(root.Position.X, floorY + btp, root.Position.Z)
+			* CFrame.Angles(0, math.rad(root.Orientation.Y), 0))
+		podium.Parent = workspace
+	end
+
+	-- Pose animation
+	local poseID    = designer:GetAttribute("EquippedPose") or "rbxassetid://74997474532222"
+	local animObj   = Instance.new("Animation")
+	animObj.AnimationId = poseID
+	local poseTrack = hum:LoadAnimation(animObj)
+	poseTrack:Play()
+
+	-- Proximity Prompt for rescue
+	local promptPart = podium:FindFirstChild("Base") or podium:FindFirstChildWhichIsA("BasePart") or podium.PrimaryPart
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ActionText           = "Unfreeze Teammate"
+	prompt.ObjectText          = designer.Name
+	prompt.HoldDuration        = 0
+	prompt.RequiresLineOfSight = false
+	prompt.Parent              = promptPart
+
+	prompt.Triggered:Connect(function(rescuer)
+		if rescuer.Team and rescuer.Team.Name == DESIGNER_TEAM then
+			unfreezePlayer(designer, rescuer)
+		end
+	end)
+
+	local billboard, timerLabel = createCountdownBillboard(root)
+
+	local podiumPos = podium:GetPivot().Position
+	SpawnPodiumVFX:FireAllClients(podiumPos)
+	SoundService.FireToAll("PodiumSpawn",  podiumPos)
+	SoundService.FireToAll("CrowdGasp",    podiumPos)
+	SoundService.FireToAll("PlayerFrozen", root.Position)
+
+	-- Finalize the freeze state
+	frozenPlayers[designer.UserId] = {
+		TimeLeft        = CANCELLATION_TIME,
+		Podium          = podium,
+		PoseAnim        = poseTrack,
+		Player          = designer,
+		OriginalVisuals = savedVisuals,
+		Countdown       = billboard,
+		TimerLabel      = timerLabel,
+	}
+
+	if critic then
+		RewardTracker.OnFreezeDesigner(critic)
+		ShowstopperService.OnFreezeDesigner(critic)
+	end
+
+	processingFreeze[designer.UserId] = nil -- Logic finished
+	checkTotalFreeze()
+end
+
+-- ── TagManager public API ─────────────────────────────────────────────────────
+local TagManager = {
+	Freeze = freezePlayer,
+	CheckDunkDenied = function(critic, designerRoot)
+		local CollectionService = game:GetService("CollectionService")
+		for _, bin in ipairs(CollectionService:GetTagged("FabricBins")) do
+			local bp = bin:IsA("BasePart") and bin or bin:FindFirstChildWhichIsA("BasePart")
+			if bp and designerRoot and (designerRoot.Position - bp.Position).Magnitude <= DUNK_DENIED_RANGE then
+				ShowstopperService.OnDunkDenied(critic)
+				return true
+			end
+		end
+		return false
+	end,
+
+	CheckInterceptPass = function(critic, designerChar)
+		if designerChar and designerChar:GetAttribute("IsPassing") then
+			ShowstopperService.OnInterceptPass(critic)
+			print("[TAG] Intercept pass bonus for " .. critic.Name)
+		end
+	end,
+}
+
+-- ── Round cleanup via RoundEvents ─────────────────────────────────────────────
+RoundEvents.Intermission.Event:Connect(function()
+	for _, data in pairs(frozenPlayers) do
+		if data.Player then unfreezePlayer(data.Player, nil) end
+	end
+end)
+
+-- ── Anti-camp + timer loop ── ──────────────────────────────────────────────────
+task.spawn(function()
+	while true do
+		task.wait(1)
+		for _, data in pairs(frozenPlayers) do
+			local isCamped     = false
+			local designerChar = data.Player.Character
+
+			for _, critic in ipairs(Teams.Critics:GetPlayers()) do
+				local cc = critic.Character
+				if cc and designerChar
+					and cc:FindFirstChild("HumanoidRootPart")
+					and designerChar:FindFirstChild("HumanoidRootPart") then
+					if (cc.HumanoidRootPart.Position - designerChar.HumanoidRootPart.Position).Magnitude < ANTI_CAMP_DISTANCE then
+						isCamped = true
+						break
+					end
+				end
+			end
+
+			if not isCamped then
+				data.TimeLeft -= 1
+				if data.TimerLabel and data.TimerLabel.Parent then
+					data.TimerLabel.Text = data.TimeLeft .. "s"
+					if data.TimeLeft <= 15 then
+						data.TimerLabel.TextColor3 = Color3.fromRGB(255, 30, 30)
+					end
+				end
+				if data.TimeLeft <= 0 then
+					local relevance = ServiceRegistry.Get("RelevanceSystem")
+					if relevance then relevance.AddStrike(data.Player) end
+					unfreezePlayer(data.Player, nil)
+				end
+			end
+		end
+	end
+end)
+
+-- ── Freeze event listener ─────────────────────────────────────────────────────
+Remotes.FreezeEvent.OnServerEvent:Connect(function(critic, hitCharacter)
+	if not (critic.Team and critic.Team.Name == CRITIC_TEAM) then return end
+
+	local target = Players:GetPlayerFromCharacter(hitCharacter)
+	if not target then return end
+	if not (target.Team and target.Team.Name == DESIGNER_TEAM) then return end
+
+	local cRoot = critic.Character and critic.Character:FindFirstChild("HumanoidRootPart")
+	local tRoot = hitCharacter:FindFirstChild("HumanoidRootPart")
+	if not cRoot or not tRoot then return end
+
+	if (cRoot.Position - tRoot.Position).Magnitude > 12 then
+		warn("[EXPLOIT] " .. critic.Name .. " freeze too far.")
+		return
+	end
+
+	TagManager.CheckDunkDenied(critic, tRoot)
+	TagManager.CheckInterceptPass(critic, hitCharacter)
+	freezePlayer(target, critic)
+end)
+
+ServiceRegistry.Register("TagManager", TagManager)
+return TagManager
