@@ -21,6 +21,7 @@ local PassFabric      = getRemote("PassFabric")
 local PlayPoofVFX     = getRemote("PlayPoofVFX")
 local SetTeammateGlow = getRemote("SetTeammateGlow")
 local ShowRewardPopup = getRemote("ShowRewardPopup")
+local SetPromptVisible = getRemote("SetPromptVisible") -- fires only to designers
 
 local PASS_RANGE     = 15
 local DESIGNER_TEAM  = "Designers"
@@ -134,7 +135,10 @@ local function updatePassSystem()
 						prompt.HoldDuration = 0
 						prompt.MaxActivationDistance = 8
 						prompt.RequiresLineOfSight   = false
+						prompt.Enabled      = false  -- Hidden server-side; critics won't see it
 						prompt.Parent = tRoot
+						-- Show only to the holder (the one with the fabric roll)
+						SetPromptVisible:FireClient(holder, prompt, true)
 
 						prompt.Triggered:Connect(function(playerWhoTriggered)
 							-- Only the person holding the fabric can trigger this specific pass
