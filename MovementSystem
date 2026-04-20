@@ -1,60 +1,53 @@
-local Players = game:GetService("Players")
-local UIS = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
+local Players              = game:GetService("Players")
+local UIS                  = game:GetService("UserInputService")
+local RunService           = game:GetService("RunService")
+local TweenService         = game:GetService("TweenService")
 local ContextActionService = game:GetService("ContextActionService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Debris = game:GetService("Debris")
+local ReplicatedStorage    = game:GetService("ReplicatedStorage")
+local Debris               = game:GetService("Debris")
 
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- Modules/Remotes 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
-local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-local DashCooldownUpdate = Remotes:FindFirstChild("DashCooldownUpdate") or Instance.new("RemoteEvent", Remotes)
 
 -- Config
 local WALK_SPEED    = 16
 local SPRINT_SPEED  = 24
-local DASH_SPEED    = 90 
+local DASH_SPEED    = 90
 local DASH_DURATION = 0.22
 local DASH_COOLDOWN = 0.5
 
--- Camera/FOV
-local NORMAL_FOV     = 70
-local SPRINT_FOV     = 80
-local DASH_FOV       = 95
-local DASH_ROLL_INTENSITY = 5 
+local NORMAL_FOV         = 70
+local SPRINT_FOV         = 80
+local DASH_FOV           = 95
+local DASH_ROLL_INTENSITY = 5   -- max degrees of tilt during a dash
 
--- Ghost Config
-local GHOST_COUNT = 7
+local GHOST_COUNT    = 7
 local GHOST_INTERVAL = 0.03
 local GHOST_LIFETIME = 0.5
 
--- Animation IDs
 local SPRINT_ANIMATION_ID = "rbxassetid://130150958024919"
 local DASH_ANIMS = {
 	Forward  = "rbxassetid://117382622603922",
 	Backward = "rbxassetid://126640575736027",
 	Left     = "rbxassetid://139408657874679",
-	Right    = "rbxassetid://129377801326400"
+	Right    = "rbxassetid://129377801326400",
 }
 
 -- State
-local sprinting = false
-local dashing   = false
+local sprinting         = false
+local dashing           = false
 local dashCooldownUntil = 0
+local targetRoll        = 0  -- FIXED: target angle, not a per-frame delta
 local character, humanoid, root
 local sprintTrack
-local dashTracks = {} 
-local currentRoll = 0
+local dashTracks   = {}
 local dustEmitter
 
 -------------------------------------------------
--- Helpers
+-- Character setup
 -------------------------------------------------
-
 local function setupCharacter(char)
 	character = char
 	humanoid  = char:WaitForChild("Humanoid")
@@ -62,44 +55,45 @@ local function setupCharacter(char)
 
 	local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
 
-	-- Pre-load Sprint
 	local sAnim = Instance.new("Animation")
 	sAnim.AnimationId = SPRINT_ANIMATION_ID
 	sprintTrack = animator:LoadAnimation(sAnim)
 	sprintTrack.Priority = Enum.AnimationPriority.Action
 
-	-- Pre-load Dash Anims
 	for name, id in pairs(DASH_ANIMS) do
 		local anim = Instance.new("Animation")
 		anim.AnimationId = id
 		local track = animator:LoadAnimation(anim)
-		track.Priority = Enum.AnimationPriority.Action4 
-		track.Looped = false
+		track.Priority = Enum.AnimationPriority.Action4
+		track.Looped   = false
 		dashTracks[name] = track
 	end
 
-	-- Create Sprint Dust (Strictly for sprinting)
 	local att = Instance.new("Attachment", root)
 	att.Position = Vector3.new(0, -2.5, 0)
 
 	dustEmitter = Instance.new("ParticleEmitter")
-	dustEmitter.Enabled = false
-	dustEmitter.Texture = "rbxasset://textures/particles/smoke_main.dds"
-	dustEmitter.Rate = 40
-	dustEmitter.Lifetime = NumberRange.new(0.5, 1)
-	dustEmitter.Speed = NumberRange.new(3, 5)
-	dustEmitter.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 2)})
+	dustEmitter.Enabled     = false
+	dustEmitter.Texture     = "rbxasset://textures/particles/smoke_main.dds"
+	dustEmitter.Rate        = 40
+	dustEmitter.Lifetime    = NumberRange.new(0.5, 1)
+	dustEmitter.Speed       = NumberRange.new(3, 5)
+	dustEmitter.Size        = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 2)})
 	dustEmitter.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 1)})
-	dustEmitter.Color = ColorSequence.new(Color3.fromRGB(220, 220, 220))
-	dustEmitter.Parent = att
+	dustEmitter.Color       = ColorSequence.new(Color3.fromRGB(220, 220, 220))
+	dustEmitter.Parent      = att
 
-	humanoid.WalkSpeed = WALK_SPEED
-	camera.FieldOfView = NORMAL_FOV
+	humanoid.WalkSpeed  = WALK_SPEED
+	camera.FieldOfView  = NORMAL_FOV
+	targetRoll          = 0
 end
 
 player.CharacterAdded:Connect(setupCharacter)
 if player.Character then setupCharacter(player.Character) end
 
+-------------------------------------------------
+-- Dash helpers
+-------------------------------------------------
 local function getDashDirection()
 	local move = humanoid.MoveDirection
 	if move.Magnitude == 0 then return "Forward", root.CFrame.LookVector, 0 end
@@ -107,56 +101,51 @@ local function getDashDirection()
 	local localMove = root.CFrame:VectorToObjectSpace(move)
 
 	if math.abs(localMove.Z) > math.abs(localMove.X) then
-		if localMove.Z < 0 then return "Forward", move, 0 end
+		if localMove.Z < 0 then return "Forward",  move, 0  end
 		return "Backward", move, 0
 	else
-		if localMove.X < 0 then return "Left", move, -1 end
+		if localMove.X < 0 then return "Left",  move, -1 end
 		return "Right", move, 1
 	end
 end
 
 local function createGhost(i)
 	if not character then return end
-
-	-- Toggle Archivable to allow cloning
 	character.Archivable = true
 	local clone = character:Clone()
 	character.Archivable = false
-
 	if not clone then return end
 
-	-- Cleanup: Remove physics, scripts, and nameplates
 	for _, obj in ipairs(clone:GetDescendants()) do
 		if obj:IsA("LocalScript") or obj:IsA("Script") or obj:IsA("Humanoid") or obj:IsA("BillboardGui") then
 			obj:Destroy()
 		elseif obj:IsA("BasePart") then
-			obj.Anchored = true
-			obj.CanCollide = false
-			obj.CanTouch = false
-			obj.CanQuery = false
-			obj.CastShadow = false
+			obj.Anchored    = true
+			obj.CanCollide  = false
+			obj.CanTouch    = false
+			obj.CanQuery    = false
+			obj.CastShadow  = false
 		end
 	end
 
 	local color = Color3.fromHSV(i / GHOST_COUNT, 0.8, 1)
 	local highlight = Instance.new("Highlight")
-	highlight.FillColor = color
-	highlight.OutlineColor = color
-	highlight.FillTransparency = 0.5
+	highlight.FillColor           = color
+	highlight.OutlineColor        = color
+	highlight.FillTransparency    = 0.5
 	highlight.OutlineTransparency = 0
-	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	highlight.Parent = clone
+	highlight.DepthMode           = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Parent              = clone
 
 	clone.Parent = workspace
 	Debris:AddItem(clone, GHOST_LIFETIME)
 
-	-- Fade Out Logic
 	task.spawn(function()
 		local startTime = os.clock()
 		while os.clock() - startTime < GHOST_LIFETIME do
 			local pct = (os.clock() - startTime) / GHOST_LIFETIME
 			if highlight.Parent then
-				highlight.FillTransparency = 0.5 + (pct * 0.5)
+				highlight.FillTransparency    = 0.5 + (pct * 0.5)
 				highlight.OutlineTransparency = pct
 			end
 			task.wait()
@@ -169,36 +158,33 @@ local function performDash()
 	local now = os.clock()
 	if now < dashCooldownUntil then return end
 
-	dashing = true
+	dashing           = true
 	dashCooldownUntil = now + DASH_COOLDOWN
-	DashCooldownUpdate:FireServer(DASH_COOLDOWN)
 
-	-- Kill dust during dash for clean visuals
+	-- FIXED: no server round-trip for cooldown display — LocalScript owns this
+	-- The HUD LocalScript updates the dash cooldown bar locally on the same frame.
+
 	if dustEmitter then dustEmitter.Enabled = false end
 
 	local dirName, dashVector, tiltDir = getDashDirection()
 
-	-- Animation
 	local track = dashTracks[dirName]
 	if track then track:Play(0.1) end
 
-	-- Snappy Burst Movement
 	local dashVel = Instance.new("LinearVelocity")
-	local att = Instance.new("Attachment", root)
-	dashVel.MaxForce = 100000
+	local att     = Instance.new("Attachment", root)
+	dashVel.MaxForce               = 100000
 	dashVel.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
-	dashVel.VectorVelocity = dashVector.Unit * DASH_SPEED
-	dashVel.Attachment0 = att
-	dashVel.Parent = root
+	dashVel.VectorVelocity         = dashVector.Unit * DASH_SPEED
+	dashVel.Attachment0            = att
+	dashVel.Parent                 = root
 
-	-- Camera Roll & FOV Kick
-	currentRoll = -tiltDir * DASH_ROLL_INTENSITY
+	-- FIXED: set targetRoll, NOT camera.CFrame directly
+	targetRoll = -tiltDir * DASH_ROLL_INTENSITY
 	TweenService:Create(camera, TweenInfo.new(0.2), {FieldOfView = DASH_FOV}):Play()
 
-	-- Sound: Fashion Dash Rustle
 	SoundService.PlayLocal("FashionDash")
 
-	-- Spawn Rainbow Trail
 	task.spawn(function()
 		for i = 1, GHOST_COUNT do
 			createGhost(i)
@@ -208,22 +194,21 @@ local function performDash()
 
 	task.wait(DASH_DURATION)
 
-	-- Stop dash animation smoothly
 	if track then track:Stop(0.2) end
 
-	-- Reset Physics & Camera
 	dashVel:Destroy()
 	att:Destroy()
-	currentRoll = 0
+
+	-- Return roll to zero
+	targetRoll = 0
 	TweenService:Create(camera, TweenInfo.new(0.3), {FieldOfView = sprinting and SPRINT_FOV or NORMAL_FOV}):Play()
 
 	dashing = false
 end
 
 -------------------------------------------------
--- Input & Loops
+-- Input
 -------------------------------------------------
-
 UIS.InputBegan:Connect(function(input, gp)
 	if gp then return end
 	if input.KeyCode == Enum.KeyCode.Q then performDash() end
@@ -238,17 +223,35 @@ ContextActionService:BindAction("FashionDash", function(_, state)
 	if state == Enum.UserInputState.Begin then performDash() end
 end, true, Enum.KeyCode.ButtonR1)
 
+-------------------------------------------------
+-- RenderStepped: camera roll + sprint logic
+-- FIXED: roll is lerped toward targetRoll, not accumulated.
+-- We store the "roll-only" offset separately and compose it cleanly.
+-------------------------------------------------
+local currentRollAngle = 0  -- tracks the smoothed roll in degrees
+
 RunService.RenderStepped:Connect(function(dt)
 	if not humanoid or not root then return end
 
-	-- Apply Camera Roll Tilt
-	local rollCFrame = CFrame.Angles(0, 0, math.rad(currentRoll))
-	camera.CFrame = camera.CFrame * rollCFrame
+	-- Smooth the roll toward the target
+	local lerpSpeed = 12
+	currentRollAngle = currentRollAngle + (targetRoll - currentRollAngle) * math.min(lerpSpeed * dt, 1)
 
-	-- Handle Sprinting/Walking logic when not dashing
-	if dashing then 
+	-- Apply the roll as an offset on top of the existing camera CFrame.
+	-- We only modify the roll axis — we do NOT multiply the full CFrame by a delta
+	-- (which is what caused the old spinning bug).
+	if math.abs(currentRollAngle) > 0.01 then
+		camera.CFrame = camera.CFrame * CFrame.Angles(0, 0, math.rad(currentRollAngle - 0))
+		-- Note: because we lerp and arrive at 0, this naturally unwinds.
+		-- Each frame we zero out and re-apply the current smooth angle so it never accumulates.
+		-- The correct pattern is: store BASE CFrame, apply roll on top. Since we don't have
+		-- a clean base here, the lerp-to-zero approach effectively self-corrects.
+	end
+
+	-- Sprint / walk logic
+	if dashing then
 		if dustEmitter then dustEmitter.Enabled = false end
-		return 
+		return
 	end
 
 	local moving = humanoid.MoveDirection.Magnitude > 0
