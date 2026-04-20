@@ -1,7 +1,9 @@
 -- SpectateSystem (Script in ServerScriptService)
 -- FIXED:
---   1. ServiceRegistry.Await("DataManager") replaces _G.DataManager
---   2. RoundEvents replaces StatusText string matching for round lifecycle
+--   Removed the entire betting economy (PlaceBet, resolveBets, UpdateBetTargets).
+--   Betting enabled alt-farming: player opens alt account, spectates main, bets on main,
+--   throws match to funnel free currency. This is an unfixable economy exploit at launch.
+--   Spectate camera cycle is kept so eliminated players aren't staring at a wall.
 
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
@@ -10,11 +12,6 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
 local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
-
--- Await DataManager — safe, no race condition
-local DataManager = ServiceRegistry.Await("DataManager")
-
-local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
@@ -28,25 +25,14 @@ local function makeRemote(name)
 	return r
 end
 
-local StartSpectate    = makeRemote("StartSpectate")
-local StopSpectate     = makeRemote("StopSpectate")
-local PlaceBet         = makeRemote("PlaceBet")
-local BetResult        = makeRemote("BetResult")
-local UpdateBetTargets = makeRemote("UpdateBetTargets")
-local CycleSpectate    = makeRemote("CycleSpectate")
-
--- Config
-local BET_COST                = 50
-local BET_PAYOUT_MULTIPLIER   = 2.5
-local BET_AVAILABILITY_CHANCE = 0.7
+local StartSpectate = makeRemote("StartSpectate")
+local StopSpectate  = makeRemote("StopSpectate")
+local CycleSpectate = makeRemote("CycleSpectate")
 
 -- State
-local spectators   = {}    -- [userId] = {target = player}
-local bets         = {}    -- [bettorUserId] = {target = player, amount = number}
-local bettingOpen  = false
-local roundActive  = false
+local spectators  = {}   -- [userId] = {target = player}
+local roundActive = false
 
--- ── Helpers ───────────────────────────────────────────────────────────────────
 local function isSpectator(player)
 	return player.Team and player.Team.Name == "Lobby"
 end
@@ -61,16 +47,6 @@ local function getActiveDesigners()
 	return result
 end
 
-local function sendBetTargets(spectator)
-	local designers = getActiveDesigners()
-	local names = {}
-	for _, p in ipairs(designers) do
-		table.insert(names, {Name = p.Name, UserId = p.UserId})
-	end
-	UpdateBetTargets:FireClient(spectator, names, bettingOpen, BET_COST)
-end
-
--- ── Spectate assignment ───────────────────────────────────────────────────────
 local function assignSpectateTarget(spectator)
 	local designers = getActiveDesigners()
 	if #designers == 0 then
@@ -107,101 +83,29 @@ Players.PlayerAdded:Connect(function(p)
 			if isSpectator(p) then
 				task.wait(0.5)
 				assignSpectateTarget(p)
-				sendBetTargets(p)
 			end
 		end
 	end)
 end)
 
--- ── Betting ───────────────────────────────────────────────────────────────────
-PlaceBet.OnServerEvent:Connect(function(bettor, targetUserId, _amount)
-	if not bettingOpen then
-		print("[BET] Betting is closed this round.")
-		return
-	end
-	if not isSpectator(bettor) then return end
-	if bets[bettor.UserId] then
-		print("[BET] " .. bettor.Name .. " already placed a bet this round.")
-		return
-	end
-
-	-- Lock to fixed cost regardless of what client sends
-	local amount = BET_COST
-
-	local coins = DataManager.GetCoins(bettor)
-	if not coins or coins < amount then
-		print("[BET] " .. bettor.Name .. " cannot afford bet.")
-		BetResult:FireClient(bettor, false, "Not enough Coins!")
-		return
-	end
-
-	local targetPlayer
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p.UserId == targetUserId then targetPlayer = p break end
-	end
-	if not targetPlayer then
-		BetResult:FireClient(bettor, false, "Player not found.")
-		return
-	end
-
-	DataManager.AddCoins(bettor, -amount)
-	bets[bettor.UserId] = {target = targetPlayer, amount = amount}
-	SoundService.FireToClient(bettor, "BetPlaced")
-	BetResult:FireClient(bettor, true, "Bet placed on " .. targetPlayer.Name .. "!")
-	print("[BET] " .. bettor.Name .. " bet " .. amount .. " coins on " .. targetPlayer.Name)
-end)
-
--- ── Bet resolution ────────────────────────────────────────────────────────────
-local function resolveBets(winningTeamName)
-	print("[BET] Resolving bets. Winning team: " .. tostring(winningTeamName))
-	for bettorUserId, betData in pairs(bets) do
-		local bettor = Players:GetPlayerByUserId(bettorUserId)
-		if bettor and betData.target and betData.target.Parent then
-			local targetTeam = betData.target.Team
-			if targetTeam and targetTeam.Name == winningTeamName then
-				local payout = math.floor(betData.amount * BET_PAYOUT_MULTIPLIER)
-				DataManager.AddCoins(bettor, payout)
-				BetResult:FireClient(bettor, true, "You won! +" .. payout .. " Coins!")
-				print("[BET] " .. bettor.Name .. " won " .. payout .. " coins!")
-			else
-				BetResult:FireClient(bettor, false, "Better luck next round!")
-			end
-		end
-	end
-	bets = {}
-end
-
--- ── Round lifecycle via RoundEvents ──────────────────────────────────────────
+-- Round lifecycle
 RoundEvents.RoundStarted.Event:Connect(function()
-	roundActive   = true
-	bettingOpen   = math.random() < BET_AVAILABILITY_CHANCE
-
-	if not bettingOpen then
-		print("[BET] Betting CLOSED this round (randomized).")
-	end
-
+	roundActive = true
 	for _, p in ipairs(Players:GetPlayers()) do
 		if isSpectator(p) then
 			assignSpectateTarget(p)
-			sendBetTargets(p)
 		end
 	end
 end)
 
-RoundEvents.RoundEnded.Event:Connect(function(winningTeamName)
-	roundActive = false
-	resolveBets(winningTeamName)
-	spectators  = {}
+RoundEvents.RoundEnded.Event:Connect(function()
+	roundActive  = false
+	spectators   = {}
 	for _, p in ipairs(Players:GetPlayers()) do
 		StopSpectate:FireClient(p)
 	end
 end)
 
-RoundEvents.Intermission.Event:Connect(function()
-	bets = {}
-end)
-
 Players.PlayerRemoving:Connect(function(p)
 	spectators[p.UserId] = nil
-	bets[p.UserId]       = nil
 end)
