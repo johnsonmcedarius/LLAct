@@ -1,7 +1,3 @@
--- RelevanceSystem (Script in ServerScriptService)
--- FIXED: Registers via ServiceRegistry. Round reset uses RoundEvents.
--- ShowstopperAnnouncer resolved via ServiceRegistry.Get() (optional dep).
-
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local Teams               = game:GetService("Teams")
