@@ -1,0 +1,16 @@
+-- PromptVisibilityClient (LocalScript in StarterPlayerScripts)
+-- Handles designer-only ProximityPrompt visibility.
+-- The server creates prompts with Enabled = false so ALL clients (including critics)
+-- see nothing by default. This script receives SetPromptVisible from the server
+-- and toggles Enabled only on THIS client, so critics are never notified.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local SetPromptVisible = Remotes:WaitForChild("SetPromptVisible")
+
+SetPromptVisible.OnClientEvent:Connect(function(prompt, visible)
+	if prompt and prompt:IsA("ProximityPrompt") then
+		prompt.Enabled = visible
+	end
+end)
