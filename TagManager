@@ -1,3 +1,7 @@
+ -- TagManager (Script in ServerScriptService)
+-- FIXED: All _G calls replaced with ServiceRegistry.Await / .Get
+-- Round reset uses RoundEvents. StatusText string matching removed.
+
 local Players         = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Teams           = game:GetService("Teams")
@@ -29,15 +33,6 @@ local SpawnPodiumVFX    = getRemote("SpawnPodiumVFX")
 local DespawnPodiumVFX  = getRemote("DespawnPodiumVFX")
 local UpdateCancelTimer = getRemote("UpdateCancelTimer")
 local ShowRewardPopup   = getRemote("ShowRewardPopup")
-local SetPromptVisible  = getRemote("SetPromptVisible") -- fires only to designers
-
-local function fireToDesigners(remote, ...)
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p.Team and p.Team.Name == DESIGNER_TEAM then
-			remote:FireClient(p, ...)
-		end
-	end
-end
 
 local CANCELLATION_TIME   = 60
 local ANTI_CAMP_DISTANCE  = 15
@@ -46,9 +41,7 @@ local DESIGNER_TEAM       = "Designers"
 local CRITIC_TEAM         = "Critics"
 local TEXTURE_SCROLL_SPEED = 50
 
--- State variables
 local frozenPlayers = {}
-local processingFreeze = {} -- The spam fix
 
 local StaticEffects = {
 	White = {Color = Color3.new(1, 1, 1),            Material = Enum.Material.SmoothPlastic},
@@ -174,7 +167,7 @@ local function createCountdownBillboard(root)
 	return billboard, label
 end
 
--- ── Unfreeze ── ──────────────────────────────────────────────────────────────────
+-- ── Unfreeze ──────────────────────────────────────────────────────────────────
 local function unfreezePlayer(targetPlayer, rescuer)
 	local data = frozenPlayers[targetPlayer.UserId]
 	if not data then return end
@@ -216,23 +209,13 @@ local function checkTotalFreeze()
 end
 
 local function freezePlayer(designer, critic)
-	-- CHECK 1: Already frozen?
 	if frozenPlayers[designer.UserId] then return end
-	-- CHECK 2: Already being processed (the spam fix)?
-	if processingFreeze[designer.UserId] then return end
-
-	processingFreeze[designer.UserId] = true
 
 	local char = designer.Character
 	local root = char:FindFirstChild("HumanoidRootPart")
 	local hum  = char:FindFirstChild("Humanoid")
+	if not root or not hum then return end
 
-	if not root or not hum then 
-		processingFreeze[designer.UserId] = nil 
-		return 
-	end
-
-	-- Remove weapons/tools
 	local toolInChar = char:FindFirstChild("FBRoll")
 	local toolInBp   = designer.Backpack:FindFirstChild("FBRoll")
 	if toolInChar then toolInChar:Destroy() end
@@ -240,16 +223,13 @@ local function freezePlayer(designer, critic)
 
 	root.Anchored = true
 
-	-- Strikes and Rewards
 	local relevance = ServiceRegistry.Get("RelevanceSystem")
 	if relevance then relevance.AddStrike(designer) end
 	RewardTracker.OnPlayerFrozen(designer)
 
-	-- Visuals
 	local effectName   = designer:GetAttribute("EquippedFreezeEffect") or "White"
 	local savedVisuals = applyFreezeVisuals(designer, effectName)
 
-	-- Podium setup
 	local podiumName     = designer:GetAttribute("EquippedPodium") or "BasicPodium"
 	local podiumTemplate = Podiums:FindFirstChild(podiumName) or Podiums:FindFirstChild("BasicPodium")
 	local podium         = podiumTemplate:Clone()
@@ -279,24 +259,19 @@ local function freezePlayer(designer, critic)
 		podium.Parent = workspace
 	end
 
-	-- Pose animation
 	local poseID    = designer:GetAttribute("EquippedPose") or "rbxassetid://74997474532222"
 	local animObj   = Instance.new("Animation")
 	animObj.AnimationId = poseID
 	local poseTrack = hum:LoadAnimation(animObj)
 	poseTrack:Play()
 
-	-- Proximity Prompt for rescue
 	local promptPart = podium:FindFirstChild("Base") or podium:FindFirstChildWhichIsA("BasePart") or podium.PrimaryPart
 	local prompt = Instance.new("ProximityPrompt")
-	prompt.ActionText           = "Unfreeze Teammate"
+	prompt.ActionText          = "Unfreeze Teammate"
 	prompt.ObjectText          = designer.Name
 	prompt.HoldDuration        = 0
 	prompt.RequiresLineOfSight = false
-	prompt.Enabled             = false  -- Hidden server-side so critics never see it
 	prompt.Parent              = promptPart
-	-- Show only to designers
-	fireToDesigners(SetPromptVisible, prompt, true)
 
 	prompt.Triggered:Connect(function(rescuer)
 		if rescuer.Team and rescuer.Team.Name == DESIGNER_TEAM then
@@ -312,7 +287,6 @@ local function freezePlayer(designer, critic)
 	SoundService.FireToAll("CrowdGasp",    podiumPos)
 	SoundService.FireToAll("PlayerFrozen", root.Position)
 
-	-- Finalize the freeze state
 	frozenPlayers[designer.UserId] = {
 		TimeLeft        = CANCELLATION_TIME,
 		Podium          = podium,
@@ -328,13 +302,11 @@ local function freezePlayer(designer, critic)
 		ShowstopperService.OnFreezeDesigner(critic)
 	end
 
-	processingFreeze[designer.UserId] = nil -- Logic finished
 	checkTotalFreeze()
 end
 
 -- ── TagManager public API ─────────────────────────────────────────────────────
 local TagManager = {
-	Freeze = freezePlayer,
 	CheckDunkDenied = function(critic, designerRoot)
 		local CollectionService = game:GetService("CollectionService")
 		for _, bin in ipairs(CollectionService:GetTagged("FabricBins")) do
@@ -362,7 +334,7 @@ RoundEvents.Intermission.Event:Connect(function()
 	end
 end)
 
--- ── Anti-camp + timer loop ── ──────────────────────────────────────────────────
+-- ── Anti-camp + timer loop ────────────────────────────────────────────────────
 task.spawn(function()
 	while true do
 		task.wait(1)
@@ -417,9 +389,11 @@ Remotes.FreezeEvent.OnServerEvent:Connect(function(critic, hitCharacter)
 		return
 	end
 
-	TagManager.CheckDunkDenied(critic, tRoot)
-	TagManager.CheckInterceptPass(critic, hitCharacter)
-	freezePlayer(target, critic)
+	if not frozenPlayers[target.UserId] then
+		TagManager.CheckDunkDenied(critic, tRoot)
+		TagManager.CheckInterceptPass(critic, hitCharacter)
+		freezePlayer(target, critic)
+	end
 end)
 
 ServiceRegistry.Register("TagManager", TagManager)
