@@ -137,30 +137,40 @@ player:GetAttributeChangedSignal("IsVIP"):Connect(checkVIP)
 checkVIP()
 
 -------------------------------------------------
--- Strike display (Updates LOCAL player stars)
+-- Strike display (stars dim on each strike)
 -------------------------------------------------
 UpdateStrikes.OnClientEvent:Connect(function(strikeCount, maxStrikes)
-	-- Re-use the existing logic to update the local 'stars' table
 	for i = 1, MAX_STRIKES do
 		local star = stars[i]
 		if not star then continue end
 
 		if i <= strikeCount then
+			-- Star lost: dim and cross out
+			TweenService:Create(star, TweenInfo.new(0.3), {
+				TextColor3       = Color3.fromRGB(60, 60, 60),
+				TextTransparency = 0.6,
+			}):Play()
 			star.Text = "✕"
-			star.TextColor3 = Color3.fromRGB(60, 60, 60)
 		else
-			star.Text = "★"
-			star.TextColor3 = Color3.fromRGB(255, 220, 0)
+			-- Star active
+			star.TextColor3       = Color3.fromRGB(255, 220, 0)
+			star.TextTransparency = 0
+			star.Text             = "★"
 		end
 	end
 end)
 
 -------------------------------------------------
--- Remote nameplate updates (Handles seeing OTHER players)
+-- Remote nameplate updates (from server, e.g. for other players' nameplates)
+-- This handles seeing OTHER players' nameplate state.
+-- Each player runs their own NameplateController for themselves,
+-- but you can also fire UpdateNameplate to update anyone's display.
 -------------------------------------------------
 UpdateNameplate.OnClientEvent:Connect(function(targetPlayer, data)
+	-- data = {strikes, isVIP, team}
+	-- Find the target's billboard and update
 	if targetPlayer == player then
-		-- Handled by the local UpdateStrikes listener above
+		-- Already handled locally above
 		return
 	end
 
