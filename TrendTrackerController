@@ -1,132 +1,124 @@
 -- TrendTrackerController (LocalScript in StarterPlayerScripts)
--- When the critic receives TrendTrackerActivate, for 20 seconds they can see
--- pink SelectionBox outlines on designers currently holding fabric rolls.
--- The outlines show through walls (AlwaysOnTop).
+-- FIXED:
+--   Removed the RunService.Heartbeat loop that scanned every player's backpack/character
+--   every single frame. Replaced with CollectionService tag signals:
+--     - Server tags a Designer "HoldingFabric" when they pick up FBRoll
+--     - Server removes the tag when they lose it
+--   Client just listens to GetInstanceAddedSignal / GetInstanceRemovedSignal.
+--   Zero per-frame math.
 
--- Services
-local Players = game:GetService("Players")
+local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
 
 local player = Players.LocalPlayer
 
--- Remotes
-local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local Remotes              = ReplicatedStorage:WaitForChild("Remotes")
 local TrendTrackerActivate = Remotes:WaitForChild("TrendTrackerActivate")
 
 -- State
 local trendTrackerActive = false
-local trendTrackerExpiry = 0
-local auraObjects = {} -- [userId] = SelectionBox
+local expiryTask         = nil
+local auraObjects        = {}  -- [character] = Highlight
 
 -------------------------------------------------
--- Aura Helpers
+-- Aura helpers
 -------------------------------------------------
-local function applyAura(targetPlayer)
-	if auraObjects[targetPlayer.UserId] then return end
-	local char = targetPlayer.Character
-	if not char then return end
-
-	local box = Instance.new("SelectionBox")
-	box.Adornee = char
-	box.Color3 = Color3.fromRGB(255, 80, 200) -- Hot pink
-	box.LineThickness = 0.1
-	box.SurfaceTransparency = 0.8
-	box.SurfaceColor3 = Color3.fromRGB(255, 80, 200)
-	-- Note: SelectionBox doesn't have AlwaysOnTop natively.
-	-- For true wall-penetrating vision you'd use a Highlight with DepthMode set to AlwaysOnTop.
-	-- Replacing with Highlight for wall-penetrating effect:
-	box:Destroy()
+local function applyAura(character)
+	if auraObjects[character] then return end
 
 	local highlight = Instance.new("Highlight")
-	highlight.Adornee = char
-	highlight.OutlineColor = Color3.fromRGB(255, 80, 200)
-	highlight.FillColor = Color3.fromRGB(255, 80, 200)
-	highlight.FillTransparency = 0.85
+	highlight.Adornee            = character
+	highlight.OutlineColor       = Color3.fromRGB(255, 80, 200)
+	highlight.FillColor          = Color3.fromRGB(255, 80, 200)
+	highlight.FillTransparency   = 0.85
 	highlight.OutlineTransparency = 0
-	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop -- Sees through walls
-	highlight.Parent = char
+	highlight.DepthMode          = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Parent             = character
 
-	auraObjects[targetPlayer.UserId] = highlight
+	auraObjects[character] = highlight
 end
 
-local function removeAura(targetPlayer)
-	local h = auraObjects[targetPlayer.UserId]
+local function removeAura(character)
+	local h = auraObjects[character]
 	if h then
 		h:Destroy()
-		auraObjects[targetPlayer.UserId] = nil
+		auraObjects[character] = nil
 	end
 end
 
 local function clearAllAuras()
-	for userId, h in pairs(auraObjects) do
+	for char, h in pairs(auraObjects) do
 		h:Destroy()
-		auraObjects[userId] = nil
+		auraObjects[char] = nil
 	end
 end
 
 -------------------------------------------------
--- Fabric holder detection (client-side check)
+-- Helper: get character from a tagged instance
+-- The server tags the CHARACTER MODEL with "HoldingFabric"
 -------------------------------------------------
-local function playerHoldsFabric(p)
-	return (p.Character and p.Character:FindFirstChild("FBRoll")) ~= nil
-		or p.Backpack:FindFirstChild("FBRoll") ~= nil
+local function getPlayerFromCharacter(char)
+	return Players:GetPlayerFromCharacter(char)
 end
 
 -------------------------------------------------
--- Activation
+-- CollectionService listeners
+-- These fire instantly when a tag is added/removed — no polling needed.
 -------------------------------------------------
-TrendTrackerActivate.OnClientEvent:Connect(function(duration)
-	-- Only Critics receive this event (server filters by team before firing)
-	print("[TREND TRACKER] Activated for " .. duration .. " seconds!")
-	trendTrackerActive = true
-	trendTrackerExpiry = os.clock() + duration
+CollectionService:GetInstanceAddedSignal("HoldingFabric"):Connect(function(char)
+	if not trendTrackerActive then return end
+
+	-- Only apply if the local player is a Critic
+	if not (player.Team and player.Team.Name == "Critics") then return end
+
+	-- Don't highlight the local player themselves
+	local targetPlayer = getPlayerFromCharacter(char)
+	if targetPlayer == player then return end
+
+	-- Only highlight Designers
+	if not (targetPlayer and targetPlayer.Team and targetPlayer.Team.Name == "Designers") then return end
+
+	applyAura(char)
+end)
+
+CollectionService:GetInstanceRemovedSignal("HoldingFabric"):Connect(function(char)
+	removeAura(char)
 end)
 
 -------------------------------------------------
--- Main loop: update auras every frame while active
+-- Activation: server fires this only to Critics
 -------------------------------------------------
-RunService.Heartbeat:Connect(function()
-	if not trendTrackerActive then return end
+TrendTrackerActivate.OnClientEvent:Connect(function(duration)
+	print("[TREND TRACKER] Activated for " .. duration .. " seconds!")
 
-	local now = os.clock()
-	if now >= trendTrackerExpiry then
+	trendTrackerActive = true
+
+	-- Cancel any previous expiry
+	if expiryTask then task.cancel(expiryTask) end
+
+	-- Immediately highlight all currently tagged Designers
+	if player.Team and player.Team.Name == "Critics" then
+		for _, char in ipairs(CollectionService:GetTagged("HoldingFabric")) do
+			local targetPlayer = getPlayerFromCharacter(char)
+			if targetPlayer and targetPlayer ~= player
+				and targetPlayer.Team and targetPlayer.Team.Name == "Designers" then
+				applyAura(char)
+			end
+		end
+	end
+
+	-- Auto-expire
+	expiryTask = task.delay(duration, function()
 		trendTrackerActive = false
 		clearAllAuras()
 		print("[TREND TRACKER] Expired.")
-		return
-	end
-
-	-- Only run for Critics
-	if not (player.Team and player.Team.Name == "Critics") then
-		clearAllAuras()
-		return
-	end
-
-	-- Build set of who currently holds fabric
-	local holdingSet = {}
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p.Team and p.Team.Name == "Designers" and playerHoldsFabric(p) then
-			holdingSet[p.UserId] = p
-		end
-	end
-
-	-- Apply auras to holders
-	for userId, p in pairs(holdingSet) do
-		applyAura(p)
-	end
-
-	-- Remove auras from anyone who dropped fabric
-	for userId, _ in pairs(auraObjects) do
-		if not holdingSet[userId] then
-			local p = Players:GetPlayerByUserId(userId)
-			if p then removeAura(p) end
-		end
-	end
+	end)
 end)
 
 -- Cleanup on character reset
 player.CharacterAdded:Connect(function()
 	clearAllAuras()
 	trendTrackerActive = false
+	if expiryTask then task.cancel(expiryTask) expiryTask = nil end
 end)
