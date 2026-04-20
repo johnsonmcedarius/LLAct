@@ -29,6 +29,15 @@ local SpawnPodiumVFX    = getRemote("SpawnPodiumVFX")
 local DespawnPodiumVFX  = getRemote("DespawnPodiumVFX")
 local UpdateCancelTimer = getRemote("UpdateCancelTimer")
 local ShowRewardPopup   = getRemote("ShowRewardPopup")
+local SetPromptVisible  = getRemote("SetPromptVisible") -- fires only to designers
+
+local function fireToDesigners(remote, ...)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Team and p.Team.Name == DESIGNER_TEAM then
+			remote:FireClient(p, ...)
+		end
+	end
+end
 
 local CANCELLATION_TIME   = 60
 local ANTI_CAMP_DISTANCE  = 15
@@ -284,7 +293,10 @@ local function freezePlayer(designer, critic)
 	prompt.ObjectText          = designer.Name
 	prompt.HoldDuration        = 0
 	prompt.RequiresLineOfSight = false
+	prompt.Enabled             = false  -- Hidden server-side so critics never see it
 	prompt.Parent              = promptPart
+	-- Show only to designers
+	fireToDesigners(SetPromptVisible, prompt, true)
 
 	prompt.Triggered:Connect(function(rescuer)
 		if rescuer.Team and rescuer.Team.Name == DESIGNER_TEAM then
