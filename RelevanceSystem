@@ -1,6 +1,9 @@
 -- RelevanceSystem (Script in ServerScriptService)
--- FIXED: Registers via ServiceRegistry. Round reset uses RoundEvents.
--- ShowstopperAnnouncer resolved via ServiceRegistry.Get() (optional dep).
+-- FIXED:
+--   CRITICAL BUG: The old addStrike function fired UpdateStrikes to EVERY player in the
+--   game with the struck player's count, causing everyone's HUD to show that player's
+--   strikes as their own. Now UpdateStrikes only fires to the ONE player who received
+--   the strike.
 
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
@@ -34,6 +37,7 @@ end
 
 local function resetStrikes(player)
 	strikeData[player.UserId] = 0
+	-- Only tell the one player their own count
 	UpdateStrikes:FireClient(player, 0, MAX_STRIKES)
 end
 
@@ -48,7 +52,6 @@ local function eliminatePlayer(player)
 
 	PlayerEliminated:FireAllClients(player.Name)
 
-	-- Optional dep — resolved at call time
 	local announcer = ServiceRegistry.Get("ShowstopperAnnouncer")
 	if announcer then
 		announcer.AnnounceCancelled(player)
@@ -71,13 +74,10 @@ local function addStrike(player)
 	strikeData[player.UserId] = strikes
 
 	print("[RELEVANCE] " .. player.Name .. " has " .. strikes .. "/" .. MAX_STRIKES .. " strikes.")
-	UpdateStrikes:FireClient(player, strikes, MAX_STRIKES)
 
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p ~= player then
-			UpdateStrikes:FireClient(p, strikes, MAX_STRIKES)
-		end
-	end
+	-- FIXED: Only fire to the player who got the strike.
+	-- Old code fired to ALL players, making everyone's HUD show the wrong count.
+	UpdateStrikes:FireClient(player, strikes, MAX_STRIKES)
 
 	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 
