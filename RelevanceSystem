@@ -1,10 +1,3 @@
--- RelevanceSystem (Script in ServerScriptService)
--- FIXED:
---   CRITICAL BUG: The old addStrike function fired UpdateStrikes to EVERY player in the
---   game with the struck player's count, causing everyone's HUD to show that player's
---   strikes as their own. Now UpdateStrikes only fires to the ONE player who received
---   the strike.
-
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local Teams               = game:GetService("Teams")
