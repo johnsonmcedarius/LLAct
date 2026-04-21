@@ -30,7 +30,7 @@ end
 local SpawnPodiumVFX    = getRemote("SpawnPodiumVFX")
 local DespawnPodiumVFX  = getRemote("DespawnPodiumVFX")
 
-local CANCELLATION_TIME   = 60
+local CANCELLATION_TIME   = 30
 local ANTI_CAMP_DISTANCE  = 15
 local DUNK_DENIED_RANGE   = 5
 local DESIGNER_TEAM       = "Designers"
@@ -40,7 +40,7 @@ local TEXTURE_SCROLL_SPEED = 50
 local frozenPlayers = {}
 
 local StaticEffects = {
-	White = {Color = Color3.new(1, 1, 1),           Material = Enum.Material.SmoothPlastic},
+	White = {Color = Color3.new(1, 1, 1),         Material = Enum.Material.SmoothPlastic},
 	Lava  = {Color = Color3.fromRGB(255, 85, 0),     Material = Enum.Material.Neon},
 	Gold  = {Color = Color3.fromRGB(255, 215, 0),    Material = Enum.Material.Metal},
 	Ice   = {Color = Color3.fromRGB(150, 235, 255),  Material = Enum.Material.Ice},
@@ -157,7 +157,7 @@ local function createCountdownBillboard(root)
 	label.TextStrokeColor3    = Color3.new(0, 0, 0)
 	label.Font                = Enum.Font.GothamBold
 	label.TextScaled          = true
-	label.Text                = "60s"
+	label.Text                = "30s"
 	label.Parent              = billboard
 
 	return billboard, label
@@ -168,7 +168,6 @@ local function checkTotalFreeze()
 	local totalFrozen = 0
 	for _ in pairs(frozenPlayers) do totalFrozen += 1 end
 
-	-- Updated Win logic from snippet: If every active designer is neutralised, Critics eat.
 	if totalFrozen >= #designers and #designers > 0 then
 		print("[TAG] All Designers neutralized. Critics win.")
 		ReplicatedStorage:SetAttribute("AllDesignersFrozen", true)
@@ -209,15 +208,12 @@ end
 local function freezePlayer(designer, critic)
 	if frozenPlayers[designer.UserId] then return end
 
-	-- 1. CHECK STRIKES FIRST (Snippet Logic)
 	local isEliminated = Relevance.AddStrike(designer)
 	if isEliminated then
-		-- RelevanceSystem handles the Poof VFX and removing them from the Designer list
 		task.defer(checkTotalFreeze)
 		return 
 	end
 
-	-- 2. IF NOT ELIMINATED (Strike 1 or 2), START FREEZE LOGIC
 	local char = designer.Character
 	local root = char:FindFirstChild("HumanoidRootPart")
 	local hum  = char:FindFirstChild("Humanoid")
@@ -241,29 +237,28 @@ local function freezePlayer(designer, critic)
 	local podiumTemplate = Podiums:FindFirstChild(podiumName) or Podiums:FindFirstChild("BasicPodium")
 	local podium         = podiumTemplate:Clone()
 
-	local rp = RaycastParams.new()
-	rp.FilterDescendantsInstances = {char, podium}
-	rp.FilterType = Enum.RaycastFilterType.Exclude
+	-- NEW SNIPPET INTEGRATED HERE
+	local rayParams = RaycastParams.new()
+	rayParams.FilterDescendantsInstances = {char}
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
-	local ray    = workspace:Raycast(root.Position + Vector3.new(0, 2, 0), Vector3.new(0, -20, 0), rp)
-	local floorY = ray and ray.Position.Y or (root.Position.Y - 3)
+	-- Shoot a ray 10 studs down from the player's center to find the floor
+	local rayResult = workspace:Raycast(root.Position, Vector3.new(0, -10, 0), rayParams)
 
+	-- If we hit something, use that position. If not, fallback to 3 studs down.
+	local groundPos = rayResult and rayResult.Position or (root.Position - Vector3.new(0, 3, 0))
+
+	-- Snap podium to the actual ground and set rotation
+	podium:PivotTo(CFrame.new(groundPos) * CFrame.Angles(0, math.rad(root.Orientation.Y), 0))
+	podium.Parent = workspace
+
+	-- Snap player to the podium's StandPoint (if it exists)
 	local standPoint = podium:FindFirstChild("StandPoint", true)
 	if standPoint then
-		podium.Parent = workspace
-		local standWorld = standPoint.WorldPosition
-		local pivotWorld = podium:GetPivot().Position
-		local offset     = pivotWorld - standWorld
-		podium:PivotTo(CFrame.new(root.Position.X + offset.X, floorY, root.Position.Z + offset.Z)
-			* CFrame.Angles(0, math.rad(root.Orientation.Y), 0))
 		root.CFrame = standPoint.WorldCFrame
 	else
-		local mCF, mSize = podium:GetBoundingBox()
-		local pivotPos   = podium:GetPivot().Position
-		local btp        = pivotPos.Y - (mCF.Position.Y - mSize.Y / 2)
-		podium:PivotTo(CFrame.new(root.Position.X, floorY + btp, root.Position.Z)
-			* CFrame.Angles(0, math.rad(root.Orientation.Y), 0))
-		podium.Parent = workspace
+		-- Fallback: move player slightly up so they aren't inside the podium base
+		root.CFrame = CFrame.new(groundPos + Vector3.new(0, 3, 0)) * CFrame.Angles(0, math.rad(root.Orientation.Y), 0)
 	end
 
 	-- Animation
@@ -342,14 +337,12 @@ local TagManager = {
 	end,
 }
 
--- ── Round cleanup via RoundEvents ─────────────────────────────────────────────
 RoundEvents.Intermission.Event:Connect(function()
 	for _, data in pairs(frozenPlayers) do
 		if data.Player then unfreezePlayer(data.Player, nil) end
 	end
 end)
 
--- ── Anti-camp + timer loop ────────────────────────────────────────────────────
 task.spawn(function()
 	while true do
 		task.wait(1)
@@ -378,7 +371,6 @@ task.spawn(function()
 					end
 				end
 				if data.TimeLeft <= 0 then
-					-- Snippet logic: Failure to unfreeze results in a strike
 					Relevance.AddStrike(data.Player)
 					unfreezePlayer(data.Player, nil)
 				end
@@ -387,7 +379,6 @@ task.spawn(function()
 	end
 end)
 
--- ── Freeze event listener ─────────────────────────────────────────────────────
 Remotes.FreezeEvent.OnServerEvent:Connect(function(critic, hitCharacter)
 	if not (critic.Team and critic.Team.Name == CRITIC_TEAM) then return end
 
@@ -399,7 +390,6 @@ Remotes.FreezeEvent.OnServerEvent:Connect(function(critic, hitCharacter)
 	local tRoot = hitCharacter:FindFirstChild("HumanoidRootPart")
 	if not cRoot or not tRoot then return end
 
-	-- Anticheat: Max reach check
 	if (cRoot.Position - tRoot.Position).Magnitude > 12 then
 		warn("[EXPLOIT] " .. critic.Name .. " freeze too far.")
 		return
