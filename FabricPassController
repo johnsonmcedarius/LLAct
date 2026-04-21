@@ -16,7 +16,7 @@ local PassFabric = Remotes:WaitForChild("PassFabric")
 local activeHighlights = {} -- [player.UserId] = Highlight instance
 
 -------------------------------------------------
--- Glow: white SelectionBox-style highlight on characters
+-- Glow: white highlight on characters
 -------------------------------------------------
 local function applyGlow(targetPlayer)
 	if activeHighlights[targetPlayer.UserId] then return end
