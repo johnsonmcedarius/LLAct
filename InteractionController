@@ -3,59 +3,83 @@ local Players = game:GetService("Players")
 
 local player = Players.LocalPlayer
 
-local function updatePrompts()
+local function updateSinglePrompt(obj)
+	-- Make sure we are actually looking at the prompt
+	local prompt = obj:IsA("ProximityPrompt") and obj or obj:FindFirstChildOfClass("ProximityPrompt")
+
+	-- If the prompt isn't there yet, wait a tiny bit for it to spawn
+	if not prompt then
+		prompt = obj:WaitForChild("DesignerPickup", 2) or obj:WaitForChild("CriticSabotage", 2) or obj:FindFirstChildOfClass("ProximityPrompt")
+	end
+
+	if not prompt then return end
+
 	local teamName = (player.Team and player.Team.Name) or ""
 	local isDesigner = (teamName == "Designers")
 	local isCritic = (teamName == "Critics")
 
-	-- 1. Handle Designer Prompts (Passing, Unfreezing, Collecting) [cite: 10, 24, 42]
-	for _, obj in ipairs(CollectionService:GetTagged("DesignerPrompt")) do
-		-- Safety check: Find the prompt even if you tagged the Part by mistake
-		local prompt = obj:IsA("ProximityPrompt") and obj or obj:FindFirstChildOfClass("ProximityPrompt")
-
-		if prompt then
-			if isDesigner then
-				-- Special logic for Passing: Only show if holding fabric [cite: 17, 24]
-				if prompt.ActionText == "Give Fabric" then
-					local hasFabric = player.Backpack:FindFirstChild("FBRoll") or (player.Character and player.Character:FindFirstChild("FBRoll"))
-					prompt.Enabled = (hasFabric ~= nil)
-				else
-					-- Unfreeze or Rack prompt
-					prompt.Enabled = true
-				end
+	-- Handle Designer Prompts
+	if CollectionService:HasTag(obj, "DesignerPrompt") or CollectionService:HasTag(prompt, "DesignerPrompt") then
+		if isDesigner then
+			if prompt.ActionText:find("Give") then
+				local char = player.Character
+				local hasFabric = player.Backpack:FindFirstChild("FBRoll") or (char and char:FindFirstChild("FBRoll"))
+				prompt.Enabled = (hasFabric ~= nil)
 			else
-				-- Hide Designer actions from Critics
-				prompt.Enabled = false
+				prompt.Enabled = true
 			end
+		else
+			prompt.Enabled = false
 		end
-	end
 
-	-- 2. Handle Critic Prompts (Sabotage)
-	for _, obj in ipairs(CollectionService:GetTagged("CriticPrompt")) do
-		local prompt = obj:IsA("ProximityPrompt") and obj or obj:FindFirstChildOfClass("ProximityPrompt")
-		if prompt then
-			prompt.Enabled = isCritic
-		end
+		-- Handle Critic Prompts
+	elseif CollectionService:HasTag(obj, "CriticPrompt") or CollectionService:HasTag(prompt, "CriticPrompt") then
+		prompt.Enabled = isCritic
 	end
 end
 
--- Refresh whenever something changes in the inventory (Backpack OR Character) 
+local function updateAllPrompts()
+	for _, obj in ipairs(CollectionService:GetTagged("DesignerPrompt")) do
+		updateSinglePrompt(obj)
+	end
+	for _, obj in ipairs(CollectionService:GetTagged("CriticPrompt")) do
+		updateSinglePrompt(obj)
+	end
+end
+
+-- Refresh logic
 local function hookCharacter(char)
-	char.ChildAdded:Connect(updatePrompts)
-	char.ChildRemoved:Connect(updatePrompts)
-	updatePrompts()
+	char.ChildAdded:Connect(updateAllPrompts)
+	char.ChildRemoved:Connect(updateAllPrompts)
+	updateAllPrompts()
 end
 
 player.CharacterAdded:Connect(hookCharacter)
 if player.Character then hookCharacter(player.Character) end
 
-player.Backpack.ChildAdded:Connect(updatePrompts)
-player.Backpack.ChildRemoved:Connect(updatePrompts)
+-- Check inventory for "Give Fabric" logic
+player.Backpack.ChildAdded:Connect(updateAllPrompts)
+player.Backpack.ChildRemoved:Connect(updateAllPrompts)
 
--- Team & Tag listeners
-player:GetPropertyChangedSignal("Team"):Connect(updatePrompts)
-CollectionService:GetInstanceAddedSignal("DesignerPrompt"):Connect(updatePrompts)
-CollectionService:GetInstanceAddedSignal("CriticPrompt"):Connect(updatePrompts)
+-- Listen for Team changes
+player:GetPropertyChangedSignal("Team"):Connect(updateAllPrompts)
 
--- Initial run
-updatePrompts()
+-- The MVP Listeners: This handles new Racks spawning in
+CollectionService:GetInstanceAddedSignal("DesignerPrompt"):Connect(function(obj)
+	task.wait(0.1) -- Give the server a millisecond to parent the prompt
+	updateSinglePrompt(obj)
+end)
+
+CollectionService:GetInstanceAddedSignal("CriticPrompt"):Connect(function(obj)
+	task.wait(0.1)
+	updateSinglePrompt(obj)
+end)
+
+-- Loop to catch any stragglers (Optional safety net)
+task.spawn(function()
+	while task.wait(2) do
+		updateAllPrompts()
+	end
+end)
+
+updateAllPrompts()
