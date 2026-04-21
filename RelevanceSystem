@@ -5,8 +5,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
 local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
-
-local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
+local SoundService    = require(ReplicatedStorage:WaitForChild("SoundService"))
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
@@ -18,29 +17,27 @@ end
 
 local UpdateStrikes    = getRemote("UpdateStrikes")
 local PlayerEliminated = getRemote("PlayerEliminated")
+local PlayPoofVFX      = getRemote("PlayPoofVFX")
 
 local MAX_STRIKES   = 3
 local DESIGNER_TEAM = "Designers"
 
 local strikeData = {}
 
+-- ── Internal Helpers ─────────────────────────────────────────────────────────
+
 local function getStrikes(player)
 	return strikeData[player.UserId] or 0
 end
 
-local function resetStrikes(player)
-	strikeData[player.UserId] = 0
-	-- Only tell the one player their own count
-	UpdateStrikes:FireClient(player, 0, MAX_STRIKES)
-end
-
 local function eliminatePlayer(player)
-	print("[RELEVANCE] " .. player.Name .. " permanently CANCELLED.")
+	print("[RELEVANCE] " .. player.Name .. " is officially CANCELLED.")
 
 	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 	if root then
+		PlayPoofVFX:FireAllClients(root.Position)
 		SoundService.FireToAll("Strike3Eliminated", root.Position)
-		SoundService.FireToAll("CrowdBoo",          root.Position)
+		SoundService.FireToAll("CrowdBoo",           root.Position)
 	end
 
 	PlayerEliminated:FireAllClients(player.Name)
@@ -50,26 +47,36 @@ local function eliminatePlayer(player)
 		announcer.AnnounceCancelled(player)
 	end
 
-	local toolInChar = player.Character and player.Character:FindFirstChild("FBRoll")
-	local toolInBp   = player.Backpack:FindFirstChild("FBRoll")
-	if toolInChar then toolInChar:Destroy() end
-	if toolInBp   then toolInBp:Destroy()   end
+	-- Tool cleanup
+	local char = player.Character
+	if char then
+		local tool = char:FindFirstChild("FBRoll") or player.Backpack:FindFirstChild("FBRoll")
+		if tool then tool:Destroy() end
+	end
 
+	-- Move to Lobby
 	task.wait(0.5)
 	player.Team = Teams:WaitForChild("Lobby")
 	player:LoadCharacter()
+
+	-- // UPDATED: Immediate Win Check // --
+	-- This forces the game to realize the Designers are either all frozen or eliminated
+	local TagManager = ServiceRegistry.Get("TagManager")
+	if TagManager and TagManager.CheckTotalFreeze then
+		TagManager.CheckTotalFreeze()
+	end
 end
 
-local function addStrike(player)
-	if not (player.Team and player.Team.Name == DESIGNER_TEAM) then return end
+-- ── Public API ───────────────────────────────────────────────────────────────
+
+local RelevanceSystem = {}
+
+function RelevanceSystem.AddStrike(player)
+	if not (player.Team and player.Team.Name == DESIGNER_TEAM) then return false end
 
 	local strikes = getStrikes(player) + 1
 	strikeData[player.UserId] = strikes
 
-	print("[RELEVANCE] " .. player.Name .. " has " .. strikes .. "/" .. MAX_STRIKES .. " strikes.")
-
-	-- FIXED: Only fire to the player who got the strike.
-	-- Old code fired to ALL players, making everyone's HUD show the wrong count.
 	UpdateStrikes:FireClient(player, strikes, MAX_STRIKES)
 
 	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
@@ -80,18 +87,26 @@ local function addStrike(player)
 		if root then SoundService.FireToClient(player, "Strike2", root.Position) end
 	elseif strikes >= MAX_STRIKES then
 		eliminatePlayer(player)
+		return true 
 	end
+
+	return false
 end
 
-local RelevanceSystem = {
-	AddStrike    = addStrike,
-	GetStrikes   = getStrikes,
-	ResetStrikes = resetStrikes,
-}
+function RelevanceSystem.GetStrikes(player)
+	return getStrikes(player)
+end
+
+function RelevanceSystem.ResetStrikes(player)
+	strikeData[player.UserId] = 0
+	UpdateStrikes:FireClient(player, 0, MAX_STRIKES)
+end
+
+-- ── Lifecycle ────────────────────────────────────────────────────────────────
 
 RoundEvents.Intermission.Event:Connect(function()
 	for _, p in ipairs(Players:GetPlayers()) do
-		resetStrikes(p)
+		RelevanceSystem.ResetStrikes(p)
 	end
 	strikeData = {}
 end)
@@ -101,4 +116,5 @@ Players.PlayerRemoving:Connect(function(p)
 end)
 
 ServiceRegistry.Register("RelevanceSystem", RelevanceSystem)
+
 return RelevanceSystem
