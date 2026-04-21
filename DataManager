@@ -1,293 +1,190 @@
-local Players           = game:GetService("Players")
+local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
-local Teams               = game:GetService("Teams")
 local ServerScriptService = game:GetService("ServerScriptService")
+local MarketplaceService  = game:GetService("MarketplaceService")
 
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
-local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
 
--- Await hard dependencies
-local DataManager = ServiceRegistry.Await("DataManager")
+-- ── ProfileStore & ReplicaService ───────────────────────────────────────────
+local ProfileStoreFolder = ServerScriptService:WaitForChild("ProfileStore")
+local ProfileStore = require(ProfileStoreFolder:WaitForChild("ProfileStore"))
+local ReplicaService = require(ServerScriptService:WaitForChild("ReplicaService"):WaitForChild("ReplicaService"))
 
--- DailyLookbook is optional — use Get() so we don't block if it's absent
-local function getDailyLookbook()
-	return ServiceRegistry.Get("DailyLookbook")
-end
-
+-- ── Remotes ──────────────────────────────────────────────────────────────────
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-
 local function getRemote(name)
 	local r = Remotes:FindFirstChild(name)
 	if not r then r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes end
 	return r
 end
-
 local ShowRewardPopup = getRemote("ShowRewardPopup")
-local ShowMVP         = getRemote("ShowMVP")
-local ShowEndStats    = getRemote("ShowEndStats")
-local PostMatchXP     = getRemote("PostMatchXP")
 
--- ── Reward config ─────────────────────────────────────────────────────────────
-local Rewards = {
-	DesignerWin       = {XP = 150,  Coins = 50},
-	FabricCollect     = {XP = 15,   Coins = 5},
-	UnfreezeAlly      = {XP = 50,   Coins = 15},
-	SurvivalPerMinute = {XP = 10,   Coins = 2},
-	CriticWin         = {XP = 200,  Coins = 75},
-	FreezeDesigner    = {XP = 75,   Coins = 20},
-	SabotageStation   = {XP = 25,   Coins = 10},
-	ApplyPressure     = {XP = 10,   Coins = 3},
-	DesignerMVP       = {XP = 100,  Coins = 50},
-	CriticMVP         = {XP = 120,  Coins = 60},
+-- ── Constants ────────────────────────────────────────────────────────────────
+local DATA_VERSION = "v1.6" -- The fix version
+local PLAYER_DATA_CLASS_TOKEN = ReplicaService.NewClassToken("PlayerData")
+
+local STARTING_DATA = {
+	Coins = 500, 
+	Level = 1, 
+	XP = 0,
+	OwnedItems = { 
+		Skins = {"Default"}, 
+		Weapons = {"BasicScissors"}, 
+		Podiums = {"BasicPodium"},
+		Emotes = {"Wave"}
+	},
+	Equipped = { 
+		Skin = "Default", 
+		Weapon = "BasicScissors", 
+		Podium = "BasicPodium",
+		Emote = "Wave"
+	},
+	PityCounter = {}, 
+	Inventory = { CoinDesignerCrate = 0, RobuxDesignerCrate = 0 }, 
+	RedeemedCodes = {},
+	LoginStreak = 0,
+	LastLogin = 0,
 }
 
-local roundScores    = {}
-local roundActive    = false
-local pressureTimers = {}
+local BASE_XP       = 100
+local XP_MULTIPLIER = 1.3
+local Profiles = {}
+local Replicas = {}
 
-local function initScore(player)
-	roundScores[player.UserId] = {
-		fabricCount = 0,
-		unfreezes   = 0,
-		freezes     = 0,
-		neverFrozen = true,
-		sabotages   = 0,
-		xpEarned    = 0,
-		coinsEarned = 0,
-	}
+-- ── Logic ────────────────────────────────────────────────────────────────────
+local function GetRequiredXP(level)
+	return math.floor(BASE_XP * (level ^ XP_MULTIPLIER))
 end
 
-local function getScore(player)
-	return roundScores[player.UserId]
-end
+local DataManager = {}
 
--- // THE FIX: Calling DataManager directly but safely // --
-local function giveReward(player, rewardKey)
-	local r = Rewards[rewardKey]
-	if not r then return end
+function DataManager.GetProfile(player)  return Profiles[player] end
+function DataManager.GetData(player)     return Profiles[player] and Profiles[player].Data end
+function DataManager.GetCoins(player)    return (DataManager.GetData(player) or {}).Coins or 0 end
 
-	-- Directly calling the fixed DataManager as requested
-	if DataManager and DataManager.AddReward then
-		DataManager.AddReward(player, r.XP, r.Coins)
-	else
-		warn("[REWARD ERROR] DataManager.AddReward is not accessible!")
+-- // THE MASTER REWARD FUNCTION // --
+function DataManager.AddReward(player, xp, coins, skipPopup)
+	local profile = Profiles[player]
+	local replica = Replicas[player]
+	if not profile or not replica then return end
+
+	local finalXP = xp or 0
+	local finalCoins = coins or 0
+
+	-- Multipliers (Forward-thinking game design!)
+	local xpMult = player:GetAttribute("XPMultiplier") or 1
+	finalXP = math.floor(finalXP * xpMult)
+
+	-- Update Values
+	profile.Data.Coins = math.max(0, profile.Data.Coins + finalCoins)
+	profile.Data.XP += finalXP
+
+	-- Handle Level Ups
+	local reqXP = GetRequiredXP(profile.Data.Level)
+	while profile.Data.XP >= reqXP do
+		profile.Data.XP -= reqXP
+		profile.Data.Level += 1
+		print(player.Name .. " leveled up to " .. profile.Data.Level)
+		reqXP = GetRequiredXP(profile.Data.Level)
 	end
 
-	local score = getScore(player)
-	if score then
-		score.xpEarned    += r.XP
-		score.coinsEarned += r.Coins
+	-- Update Replicas for UI
+	replica:SetValue({"Coins"}, profile.Data.Coins)
+	replica:SetValue({"XP"}, profile.Data.XP)
+	replica:SetValue({"Level"}, profile.Data.Level)
+
+	-- Send UI Feedback
+	if not skipPopup and (finalXP > 0 or finalCoins > 0) then
+		local xpText = finalXP > 0 and "+"..finalXP.." XP" or ""
+		local coinText = finalCoins > 0 and "+"..finalCoins.." Coins" or ""
+		ShowRewardPopup:FireClient(player, xpText, coinText)
 	end
 end
 
--- ── Global API ────────────────────────────────────────────────────────────────
-local RewardTracker = {}
+-- ── Helper Exports ──────────────────────────────────────────────────────────
+function DataManager.AddCoins(player, amount) DataManager.AddReward(player, 0, amount, true) end
+function DataManager.AddXP(player, amount) DataManager.AddReward(player, amount, 0, true) end
 
-function RewardTracker.OnFabricCollect(player)
-	giveReward(player, "FabricCollect")
-	local s = getScore(player)
-	if s then s.fabricCount += 1 end
-	local lb = getDailyLookbook()
-	if lb then lb.AddProgress(player, "Dunks", 1) end
-end
+function DataManager.GiveItem(player, category, itemName)
+	local profile = Profiles[player]
+	if not profile then return false end
+	local owned = profile.Data.OwnedItems[category]
+	if not owned then return false end
 
-function RewardTracker.OnUnfreezeAlly(player)
-	giveReward(player, "UnfreezeAlly")
-	local s = getScore(player)
-	if s then s.unfreezes += 1 end
-	local lb = getDailyLookbook()
-	if lb then lb.AddProgress(player, "Rescues", 1) end
-end
-
-function RewardTracker.OnFreezeDesigner(critic)
-	giveReward(critic, "FreezeDesigner")
-	local s = getScore(critic)
-	if s then s.freezes += 1 end
-	local lb = getDailyLookbook()
-	if lb then lb.AddProgress(critic, "Freezes", 1) end
-end
-
-function RewardTracker.OnSabotage(critic)
-	giveReward(critic, "SabotageStation")
-	local s = getScore(critic)
-	if s then s.sabotages += 1 end
-	local lb = getDailyLookbook()
-	if lb then lb.AddProgress(critic, "Sabotages", 1) end
-end
-
-function RewardTracker.OnPlayerFrozen(designer)
-	local s = getScore(designer)
-	if s then s.neverFrozen = false end
-end
-
-function RewardTracker.OnApplyPressure(critic)
-	giveReward(critic, "ApplyPressure")
-end
-
-function RewardTracker.GetScore(player)
-	return getScore(player)
-end
-
--- ── Survival passive income ───────────────────────────────────────────────────
-task.spawn(function()
-	while true do
-		task.wait(60)
-		if not roundActive then continue end
-		for _, p in ipairs(Players:GetPlayers()) do
-			if p.Team and (p.Team.Name == "Designers" or p.Team.Name == "Critics") then
-				giveReward(p, "SurvivalPerMinute")
-				local lb = getDailyLookbook()
-				if lb then lb.AddProgress(p, "SurvivalMins", 1) end
-			end
-		end
-	end
-end)
-
--- ── Apply Pressure detection ──────────────────────────────────────────────────
-task.spawn(function()
-	while true do
-		task.wait(1)
-		if not roundActive then pressureTimers = {} continue end
-
-		for _, critic in ipairs(Players:GetPlayers()) do
-			if not (critic.Team and critic.Team.Name == "Critics") then continue end
-			local cr = critic.Character and critic.Character:FindFirstChild("HumanoidRootPart")
-			if not cr then continue end
-
-			local closeDesigner, closestDist = nil, math.huge
-			for _, designer in ipairs(Players:GetPlayers()) do
-				if not (designer.Team and designer.Team.Name == "Designers") then continue end
-				local dr = designer.Character and designer.Character:FindFirstChild("HumanoidRootPart")
-				if not dr then continue end
-				local dist = (cr.Position - dr.Position).Magnitude
-				if dist < 10 and dist < closestDist then
-					closestDist   = dist
-					closeDesigner = designer
-				end
-			end
-
-			if closeDesigner then
-				local entry = pressureTimers[critic.UserId]
-				if entry and entry.targetUserId == closeDesigner.UserId then
-					if os.clock() - entry.startTime >= 15 then
-						RewardTracker.OnApplyPressure(critic)
-						pressureTimers[critic.UserId] = nil
-					end
-				else
-					pressureTimers[critic.UserId] = {startTime = os.clock(), targetUserId = closeDesigner.UserId}
-				end
-			else
-				pressureTimers[critic.UserId] = nil
-			end
-		end
-	end
-end)
-
--- ── MVP calculation ───────────────────────────────────────────────────────────
-local function calculateMVP()
-	local designerMVP, criticMVP
-	local bestDesignerScore, bestCriticScore = -1, -1
-
-	for _, p in ipairs(Players:GetPlayers()) do
-		local s = getScore(p)
-		if not s then continue end
-
-		if p.Team and p.Team.Name == "Designers" then
-			local score = (s.fabricCount * 3) + (s.unfreezes * 2) + (s.neverFrozen and 5 or 0)
-			if score > bestDesignerScore then bestDesignerScore = score designerMVP = p end
-		elseif p.Team and p.Team.Name == "Critics" then
-			if s.freezes > bestCriticScore then bestCriticScore = s.freezes criticMVP = p end
-		end
+	for _, v in ipairs(owned) do
+		if v == itemName then return false end -- Duplicate check
 	end
 
-	return designerMVP, criticMVP
+	table.insert(owned, itemName)
+	-- Update replica so the UI knows immediately
+	local replica = Replicas[player]
+	if replica then replica:SetValue({"OwnedItems", category}, owned) end
+	return true
 end
 
--- ── Round lifecycle ──────────────────────────────────────────────────────────
-RoundEvents.RoundStarted.Event:Connect(function()
-	roundActive     = true
-	pressureTimers = {}
-	for _, p in ipairs(Players:GetPlayers()) do initScore(p) end
-	print("[REWARDS] Round started.")
-end)
-
-RoundEvents.RoundEnded.Event:Connect(function(winningTeamName)
-	if not roundActive then return end
-	roundActive = false
-
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p.Team then
-			local isDesignerWin = p.Team.Name == "Designers" and winningTeamName == "Designers"
-			local isCriticWin   = p.Team.Name == "Critics"   and winningTeamName == "Critics"
-			if isDesignerWin then
-				giveReward(p, "DesignerWin")
-			elseif isCriticWin then
-				giveReward(p, "CriticWin")
-			end
-		end
+function DataManager.HasItem(player, category, itemName)
+	local data = DataManager.GetData(player)
+	if not data then return false end
+	local owned = data.OwnedItems[category]
+	if not owned then return false end
+	for _, v in ipairs(owned) do
+		if v == itemName then return true end
 	end
+	return false
+end
 
-	task.wait(0.5)
+-- ── Session Management ───────────────────────────────────────────────────────
+local function PlayerAdded(player)
+	local store = ProfileStore.New("Player_Data_" .. DATA_VERSION, STARTING_DATA)
+	local profile = store:StartSessionAsync(tostring(player.UserId))
 
-	local designerMVP, criticMVP = calculateMVP()
-	local mvpPlayer = (winningTeamName == "Designers") and designerMVP or criticMVP
-	local mvpTitle  = (winningTeamName == "Designers") and "The Lead Designer" or "The Lead Editor"
-	local mvpKey    = (winningTeamName == "Designers") and "DesignerMVP"      or "CriticMVP"
+	if profile then
+		profile:Reconcile()
 
-	if mvpPlayer then
-		giveReward(mvpPlayer, mvpKey)
-		print("[REWARDS] MVP: " .. mvpPlayer.Name .. " - " .. mvpTitle)
-
-		local allStats = {}
-		for _, p in ipairs(Players:GetPlayers()) do
-			local s = getScore(p)
-			if s then
-				table.insert(allStats, {
-					Name   = p.Name,
-					UserId = p.UserId,
-					XP     = s.xpEarned,
-					Coins  = s.coinsEarned,
-				})
+		profile.OnSessionEnd:Connect(function()
+			Profiles[player] = nil
+			if Replicas[player] then 
+				Replicas[player]:Destroy() 
+				Replicas[player] = nil 
 			end
-		end
-
-		ShowMVP:FireAllClients(mvpPlayer.Name, mvpPlayer.UserId, mvpTitle)
-
-		task.delay(10, function()
-			for _, p in ipairs(Players:GetPlayers()) do
-				local myScore = getScore(p)
-				local data    = DataManager.GetData(p)
-
-				ShowEndStats:FireClient(p, allStats,
-					myScore and myScore.xpEarned   or 0,
-					myScore and myScore.coinsEarned or 0)
-
-				if data and PostMatchXP then
-					PostMatchXP:FireClient(p,
-						data.Level,
-						data.XP,
-						myScore and myScore.xpEarned or 0)
-				end
-			end
+			if player.Parent then player:Kick("Session ended. Rejoin if this was an error!") end
 		end)
+
+		if player:IsDescendantOf(Players) then
+			Profiles[player] = profile
+			local replica = ReplicaService.NewReplica({
+				ClassToken = PLAYER_DATA_CLASS_TOKEN,
+				Data = profile.Data,
+				Replication = player
+			})
+			Replicas[player] = replica
+
+			-- Set attributes for other systems to read
+			player:SetAttribute("EquippedWeapon", profile.Data.Equipped.Weapon)
+			player:SetAttribute("EquippedPodium", profile.Data.Equipped.Podium)
+			player:SetAttribute("Level", profile.Data.Level)
+
+			print("[DATA] Successfully loaded " .. player.Name)
+		else
+			profile:EndSession()
+		end
+	else
+		player:Kick("Data failed to load. Please try again.")
+	end
+end
+
+Players.PlayerAdded:Connect(PlayerAdded)
+
+-- Handle existing players (for Studio testing)
+for _, p in ipairs(Players:GetPlayers()) do 
+	task.spawn(PlayerAdded, p) 
+end
+
+Players.PlayerRemoving:Connect(function(player)
+	if Profiles[player] then 
+		Profiles[player]:EndSession() 
 	end
 end)
 
-RoundEvents.Intermission.Event:Connect(function()
-	roundScores    = {}
-	pressureTimers = {}
-end)
-
-Players.PlayerAdded:Connect(function(p)
-	if roundActive then initScore(p) end
-end)
-
-Players.PlayerRemoving:Connect(function(p)
-	roundScores[p.UserId]    = nil
-	pressureTimers[p.UserId] = nil
-end)
-
--- Register at the very end to ensure all functions are defined
-ServiceRegistry.Register("RewardTracker", RewardTracker)
-
-return RewardTracker
+ServiceRegistry.Register("DataManager", DataManager)
+return DataManager
