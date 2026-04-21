@@ -1,4 +1,4 @@
-local Players             = game:GetService("Players")
+local Players           = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local Teams               = game:GetService("Teams")
 local ServerScriptService = game:GetService("ServerScriptService")
@@ -61,16 +61,16 @@ local function getScore(player)
 	return roundScores[player.UserId]
 end
 
--- // THE FIX: BULLETPROOF REWARD LOGIC // --
+-- // THE FIX: Calling DataManager directly but safely // --
 local function giveReward(player, rewardKey)
 	local r = Rewards[rewardKey]
 	if not r then return end
 
-	-- Safe call to prevent crashes if DataManager is out of sync
-	if type(DataManager.AddReward) == "function" then
+	-- Directly calling the fixed DataManager as requested
+	if DataManager and DataManager.AddReward then
 		DataManager.AddReward(player, r.XP, r.Coins)
 	else
-		warn("[REWARD FATAL] DataManager.AddReward is missing! Check your DataManager script version.")
+		warn("[REWARD ERROR] DataManager.AddReward is not accessible!")
 	end
 
 	local score = getScore(player)
@@ -127,8 +127,6 @@ end
 function RewardTracker.GetScore(player)
 	return getScore(player)
 end
-
-ServiceRegistry.Register("RewardTracker", RewardTracker)
 
 -- ── Survival passive income ───────────────────────────────────────────────────
 task.spawn(function()
@@ -207,7 +205,7 @@ end
 
 -- ── Round lifecycle ──────────────────────────────────────────────────────────
 RoundEvents.RoundStarted.Event:Connect(function()
-	roundActive    = true
+	roundActive     = true
 	pressureTimers = {}
 	for _, p in ipairs(Players:GetPlayers()) do initScore(p) end
 	print("[REWARDS] Round started.")
@@ -288,3 +286,8 @@ Players.PlayerRemoving:Connect(function(p)
 	roundScores[p.UserId]    = nil
 	pressureTimers[p.UserId] = nil
 end)
+
+-- Register at the very end to ensure all functions are defined
+ServiceRegistry.Register("RewardTracker", RewardTracker)
+
+return RewardTracker
