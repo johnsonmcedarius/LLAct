@@ -1,12 +1,3 @@
--- FabricPassSystem (Script in ServerScriptService)
--- FIXED:
---   1. Removed the while-true server loop that created/destroyed ProximityPrompts every 0.3s
---   2. ProximityPrompt is now created ONCE when a player picks up FBRoll (via ChildAdded),
---      and destroyed when they lose it (ChildRemoved). Zero per-frame work.
---   3. Added a per-player server-side debounce to block exploit spam on PassFabric remote.
---   4. CollectionService tag "DesignerPrompt" is applied to every prompt so other systems
---      can find them without searching the workspace hierarchy.
-
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
@@ -29,9 +20,9 @@ local PlayPoofVFX     = getRemote("PlayPoofVFX")
 local SetTeammateGlow = getRemote("SetTeammateGlow")
 local ShowRewardPopup = getRemote("ShowRewardPopup")
 
-local PASS_RANGE     = 15
+local PASS_RANGE     = 5
 local DESIGNER_TEAM  = "Designers"
-local PASS_DEBOUNCE  = 1  -- seconds between allowed passes per player
+local PASS_DEBOUNCE  = 1.5  -- seconds between allowed passes per player
 
 -- [userId] = last pass timestamp
 local lastPassTime = {}
