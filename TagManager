@@ -1,7 +1,3 @@
--- TagManager (Script in ServerScriptService)
--- FIXED: All _G calls replaced with ServiceRegistry.Await / .Get
--- Round reset uses RoundEvents. StatusText string matching removed.
-
 local Players         = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Teams           = game:GetService("Teams")
@@ -12,9 +8,10 @@ local CollectionService = game:GetService("CollectionService")
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
 local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
 
--- Await hard deps; optional deps resolved at call time via Get()
+-- Await hard deps
+local Relevance       = ServiceRegistry.Await("RelevanceSystem")
+local RewardTracker   = ServiceRegistry.Await("RewardTracker")
 local ShowstopperService = ServiceRegistry.Await("ShowstopperService")
-local RewardTracker      = ServiceRegistry.Await("RewardTracker")
 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
 
@@ -32,8 +29,6 @@ end
 
 local SpawnPodiumVFX    = getRemote("SpawnPodiumVFX")
 local DespawnPodiumVFX  = getRemote("DespawnPodiumVFX")
-local UpdateCancelTimer = getRemote("UpdateCancelTimer")
-local ShowRewardPopup   = getRemote("ShowRewardPopup")
 
 local CANCELLATION_TIME   = 60
 local ANTI_CAMP_DISTANCE  = 15
@@ -45,13 +40,13 @@ local TEXTURE_SCROLL_SPEED = 50
 local frozenPlayers = {}
 
 local StaticEffects = {
-	White = {Color = Color3.new(1, 1, 1),            Material = Enum.Material.SmoothPlastic},
+	White = {Color = Color3.new(1, 1, 1),           Material = Enum.Material.SmoothPlastic},
 	Lava  = {Color = Color3.fromRGB(255, 85, 0),     Material = Enum.Material.Neon},
 	Gold  = {Color = Color3.fromRGB(255, 215, 0),    Material = Enum.Material.Metal},
 	Ice   = {Color = Color3.fromRGB(150, 235, 255),  Material = Enum.Material.Ice},
 }
 
--- ── Freeze visuals (unchanged logic) ─────────────────────────────────────────
+-- ── Visual Logic ─────────────────────────────────────────────────────────────
 local function applyFreezeVisuals(designer, effectName)
 	local char       = designer.Character
 	local visualData = {}
@@ -143,29 +138,41 @@ local function restoreVisuals(data)
 	end
 end
 
--- ── Countdown billboard ───────────────────────────────────────────────────────
+-- ── Utilities ────────────────────────────────────────────────────────────────
 local function createCountdownBillboard(root)
 	local billboard = Instance.new("BillboardGui")
-	billboard.Name        = "CancelCountdown"
-	billboard.Size        = UDim2.fromOffset(120, 40)
+	billboard.Name         = "CancelCountdown"
+	billboard.Size         = UDim2.fromOffset(120, 40)
 	billboard.StudsOffset = Vector3.new(0, 4, 0)
 	billboard.AlwaysOnTop = false
 	billboard.MaxDistance = 40
-	billboard.Parent      = root
+	billboard.Parent       = root
 
 	local label = Instance.new("TextLabel")
-	label.Name               = "TimerLabel"
-	label.Size               = UDim2.fromScale(1, 1)
+	label.Name                = "TimerLabel"
+	label.Size                = UDim2.fromScale(1, 1)
 	label.BackgroundTransparency = 1
-	label.TextColor3         = Color3.fromRGB(255, 80, 80)
+	label.TextColor3          = Color3.fromRGB(255, 80, 80)
 	label.TextStrokeTransparency = 0.5
-	label.TextStrokeColor3   = Color3.new(0, 0, 0)
-	label.Font               = Enum.Font.GothamBold
-	label.TextScaled         = true
-	label.Text               = "60s"
-	label.Parent             = billboard
+	label.TextStrokeColor3    = Color3.new(0, 0, 0)
+	label.Font                = Enum.Font.GothamBold
+	label.TextScaled          = true
+	label.Text                = "60s"
+	label.Parent              = billboard
 
 	return billboard, label
+end
+
+local function checkTotalFreeze()
+	local designers = Teams:WaitForChild(DESIGNER_TEAM):GetPlayers()
+	local totalFrozen = 0
+	for _ in pairs(frozenPlayers) do totalFrozen += 1 end
+
+	-- Updated Win logic from snippet: If every active designer is neutralised, Critics eat.
+	if totalFrozen >= #designers and #designers > 0 then
+		print("[TAG] All Designers neutralized. Critics win.")
+		ReplicatedStorage:SetAttribute("AllDesignersFrozen", true)
+	end
 end
 
 -- ── Unfreeze ──────────────────────────────────────────────────────────────────
@@ -199,38 +206,37 @@ local function unfreezePlayer(targetPlayer, rescuer)
 end
 
 -- ── Freeze ────────────────────────────────────────────────────────────────────
-local function checkTotalFreeze()
-	local designers   = Teams:WaitForChild(DESIGNER_TEAM):GetPlayers()
-	local frozenCount = 0
-	for _ in pairs(frozenPlayers) do frozenCount += 1 end
-	if frozenCount >= #designers and #designers > 0 then
-		print("[GAME OVER] All designers frozen.")
-		ReplicatedStorage:SetAttribute("AllDesignersFrozen", true)
-	end
-end
-
 local function freezePlayer(designer, critic)
 	if frozenPlayers[designer.UserId] then return end
 
+	-- 1. CHECK STRIKES FIRST (Snippet Logic)
+	local isEliminated = Relevance.AddStrike(designer)
+	if isEliminated then
+		-- RelevanceSystem handles the Poof VFX and removing them from the Designer list
+		task.defer(checkTotalFreeze)
+		return 
+	end
+
+	-- 2. IF NOT ELIMINATED (Strike 1 or 2), START FREEZE LOGIC
 	local char = designer.Character
 	local root = char:FindFirstChild("HumanoidRootPart")
 	local hum  = char:FindFirstChild("Humanoid")
 	if not root or not hum then return end
 
+	-- Strip tools
 	local toolInChar = char:FindFirstChild("FBRoll")
 	local toolInBp   = designer.Backpack:FindFirstChild("FBRoll")
 	if toolInChar then toolInChar:Destroy() end
 	if toolInBp   then toolInBp:Destroy()   end
 
 	root.Anchored = true
-
-	local relevance = ServiceRegistry.Get("RelevanceSystem")
-	if relevance then relevance.AddStrike(designer) end
 	RewardTracker.OnPlayerFrozen(designer)
 
+	-- Visuals
 	local effectName   = designer:GetAttribute("EquippedFreezeEffect") or "White"
 	local savedVisuals = applyFreezeVisuals(designer, effectName)
 
+	-- Podium Setup
 	local podiumName     = designer:GetAttribute("EquippedPodium") or "BasicPodium"
 	local podiumTemplate = Podiums:FindFirstChild(podiumName) or Podiums:FindFirstChild("BasicPodium")
 	local podium         = podiumTemplate:Clone()
@@ -260,22 +266,23 @@ local function freezePlayer(designer, critic)
 		podium.Parent = workspace
 	end
 
+	-- Animation
 	local poseID    = designer:GetAttribute("EquippedPose") or "rbxassetid://74997474532222"
 	local animObj   = Instance.new("Animation")
 	animObj.AnimationId = poseID
 	local poseTrack = hum:LoadAnimation(animObj)
 	poseTrack:Play()
 
+	-- Proximity Prompt
 	local promptPart = podium:FindFirstChild("Base") or podium:FindFirstChildWhichIsA("BasePart") or podium.PrimaryPart
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.ActionText          = "Unfreeze Teammate"
 	prompt.ObjectText          = designer.Name
 	prompt.HoldDuration        = 0
 	prompt.RequiresLineOfSight = false
-	prompt.Enabled             = false -- CRITICAL: Start it hidden on the server
+	prompt.Enabled             = false 
 	prompt.Parent              = promptPart
 
-	-- Apply the tag so your client script knows to show it to Designers
 	CollectionService:AddTag(prompt, "DesignerPrompt")
 
 	prompt.Triggered:Connect(function(rescuer)
@@ -312,8 +319,11 @@ end
 
 -- ── TagManager public API ─────────────────────────────────────────────────────
 local TagManager = {
+	Unfreeze = function(player)
+		unfreezePlayer(player, nil)
+	end,
+
 	CheckDunkDenied = function(critic, designerRoot)
-		local CollectionService = game:GetService("CollectionService")
 		for _, bin in ipairs(CollectionService:GetTagged("FabricBins")) do
 			local bp = bin:IsA("BasePart") and bin or bin:FindFirstChildWhichIsA("BasePart")
 			if bp and designerRoot and (designerRoot.Position - bp.Position).Magnitude <= DUNK_DENIED_RANGE then
@@ -368,8 +378,8 @@ task.spawn(function()
 					end
 				end
 				if data.TimeLeft <= 0 then
-					local relevance = ServiceRegistry.Get("RelevanceSystem")
-					if relevance then relevance.AddStrike(data.Player) end
+					-- Snippet logic: Failure to unfreeze results in a strike
+					Relevance.AddStrike(data.Player)
 					unfreezePlayer(data.Player, nil)
 				end
 			end
@@ -389,6 +399,7 @@ Remotes.FreezeEvent.OnServerEvent:Connect(function(critic, hitCharacter)
 	local tRoot = hitCharacter:FindFirstChild("HumanoidRootPart")
 	if not cRoot or not tRoot then return end
 
+	-- Anticheat: Max reach check
 	if (cRoot.Position - tRoot.Position).Magnitude > 12 then
 		warn("[EXPLOIT] " .. critic.Name .. " freeze too far.")
 		return
