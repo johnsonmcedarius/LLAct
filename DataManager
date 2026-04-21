@@ -3,315 +3,139 @@ local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local MarketplaceService  = game:GetService("MarketplaceService")
 
-
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
-local DataManager = {}
 
-
-ServiceRegistry.Register("DataManager", DataManager)
-
-
-print("[DATA] Loading ProfileStore...")
-
+-- ── ProfileStore & ReplicaService ───────────────────────────────────────────
 local ProfileStoreFolder = ServerScriptService:WaitForChild("ProfileStore")
 local ProfileStore = require(ProfileStoreFolder:WaitForChild("ProfileStore"))
-print("[DATA] ProfileStore loaded.")
+local ReplicaService = require(ServerScriptService:WaitForChild("ReplicaService"):WaitForChild("ReplicaService"))
 
-print("[DATA] Loading ReplicaService...")
-local ReplicaServiceFolder = ServerScriptService:WaitForChild("ReplicaService")
-local ReplicaService = require(ReplicaServiceFolder:WaitForChild("ReplicaService"))
-print("[DATA] ReplicaService loaded.")
-
--- ── Remotes ───────────────────────────────────────────────────────────────────
+-- ── Remotes ──────────────────────────────────────────────────────────────────
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-
 local function getRemote(name)
 	local r = Remotes:FindFirstChild(name)
 	if not r then r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes end
 	return r
 end
+local ShowRewardPopup = getRemote("ShowRewardPopup")
 
-local ShowRewardPopup      = getRemote("ShowRewardPopup")
-local GetProductInfoRemote = getRemote("GetProductInfo")
-
--- ── Constants ─────────────────────────────────────────────────────────────────
-local DATA_VERSION            = "v1.5"
-local PROFILE_STORE_NAME      = "Player_Data_" .. DATA_VERSION
+-- ── Constants ────────────────────────────────────────────────────────────────
+local DATA_VERSION = "v1.6" -- The fix version
 local PLAYER_DATA_CLASS_TOKEN = ReplicaService.NewClassToken("PlayerData")
 
--- ── Starting data ─────────────────────────────────────────────────────────────
 local STARTING_DATA = {
-	Coins  = 500,
-	Level  = 1,
-	XP     = 0,
-
-	OwnedItems = {
-		Skins       = {"Default"},
-		WeaponSkins = {},
-		Weapons     = {"BasicScissors"},
-		Podiums     = {"BasicPodium"},
-		Emotes      = {"Wave"},
-		Effects     = {"White"},
+	Coins = 500, 
+	Level = 1, 
+	XP = 0,
+	OwnedItems = { 
+		Skins = {"Default"}, 
+		Weapons = {"BasicScissors"}, 
+		Podiums = {"BasicPodium"},
+		Emotes = {"Wave"}
 	},
-
-	Equipped = {
-		Skin    = "Default",
-		Weapon  = "BasicScissors",
-		Podium  = "BasicPodium",
-		Emote   = "Wave",
-		Effect  = "White",
-		Pose    = "rbxassetid://74997474532222",
+	Equipped = { 
+		Skin = "Default", 
+		Weapon = "BasicScissors", 
+		Podium = "BasicPodium",
+		Emote = "Wave"
 	},
-
-	Inventory = {
-		CoinDesignerCrate  = 0,
-		RobuxDesignerCrate = 0,
-	},
-
-	PityCounter = {
-		CoinDesignerCrate  = 0,
-		RobuxDesignerCrate = 0,
-	},
-
-	DailyLookbook = nil,
+	PityCounter = {}, 
+	Inventory = { CoinDesignerCrate = 0, RobuxDesignerCrate = 0 }, 
 	RedeemedCodes = {},
-
-	SubscriptionCoinGrantedThisMonth = false,
-
 	LoginStreak = 0,
-	LastLogin   = 0,
-	MysteryBoxAvailable = true,
+	LastLogin = 0,
 }
 
 local BASE_XP       = 100
 local XP_MULTIPLIER = 1.3
-
 local Profiles = {}
 local Replicas = {}
 
-local ATTRIBUTE_MAP = {
-	Podium  = "EquippedPodium",
-	Effect  = "EquippedFreezeEffect",
-	Pose    = "EquippedPose",
-	Skin    = "EquippedSkin",
-	Weapon  = "EquippedWeapon",
-	Emote   = "EquippedEmote",
-}
-
--- ── XP / Level helpers ────────────────────────────────────────────────────────
+-- ── Logic ────────────────────────────────────────────────────────────────────
 local function GetRequiredXP(level)
 	return math.floor(BASE_XP * (level ^ XP_MULTIPLIER))
 end
 
-local function CheckLevelUp(player)
-	local profile = Profiles[player]
-	local replica = Replicas[player]
-	if not profile or not replica then return end
+local DataManager = {}
 
-	local data   = profile.Data
-	local reqXP  = GetRequiredXP(data.Level)
-	local leveled = false
-
-	while data.XP >= reqXP do
-		data.XP   -= reqXP
-		data.Level += 1
-		reqXP      = GetRequiredXP(data.Level)
-		leveled    = true
-	end
-
-	if leveled then
-		replica:SetValue({"Level"}, data.Level)
-		replica:SetValue({"XP"}, data.XP)
-		print("[DATA] " .. player.Name .. " leveled up to " .. data.Level)
-	end
-end
-
-local function syncEquippedAttributes(player)
-	local profile = Profiles[player]
-	if not profile then return end
-
-	local equipped = profile.Data.Equipped
-	for dataKey, attrName in pairs(ATTRIBUTE_MAP) do
-		local val = equipped[dataKey]
-		if val then player:SetAttribute(attrName, val) end
-	end
-
-	print("[DATA] Attributes synced for " .. player.Name)
-end
-
--- ── Public API ────────────────────────────────────────────────────────────────
 function DataManager.GetProfile(player)  return Profiles[player] end
-function DataManager.GetData(player)
-	local p = Profiles[player]
-	return p and p.Data or nil
-end
-function DataManager.GetRequiredXP(level) return GetRequiredXP(level) end
+function DataManager.GetData(player)     return Profiles[player] and Profiles[player].Data end
+function DataManager.GetCoins(player)    return (DataManager.GetData(player) or {}).Coins or 0 end
 
-function DataManager.GetCoins(player)
-	local p = Profiles[player]
-	return p and p.Data.Coins or 0
-end
-
-function DataManager.AddCoins(player, amount)
-	local profile = Profiles[player]
-	local replica = Replicas[player]
-	if not profile or not replica then return end
-
-	local finalAmount = amount
-	if amount > 0 then
-		local vipBonus = player:GetAttribute("VIPCoinBonus")
-		if vipBonus and vipBonus > 0 then
-			finalAmount = math.floor(amount * (1 + vipBonus))
-		end
-	end
-
-	profile.Data.Coins = math.max(0, profile.Data.Coins + finalAmount)
-	replica:SetValue({"Coins"}, profile.Data.Coins)
-
-	if finalAmount > 0 then
-		ShowRewardPopup:FireClient(player, "", "+" .. finalAmount .. " Coins")
-	end
-end
-
-function DataManager.AddXP(player, amount)
-	local profile = Profiles[player]
-	local replica = Replicas[player]
-	if not profile or not replica then return end
-
-	profile.Data.XP += amount
-	replica:SetValue({"XP"}, profile.Data.XP)
-	CheckLevelUp(player)
-
-	if amount > 0 then
-		ShowRewardPopup:FireClient(player, "+" .. amount .. " XP", "")
-	end
-end
-
+-- // THE MASTER REWARD FUNCTION // --
 function DataManager.AddReward(player, xp, coins, skipPopup)
 	local profile = Profiles[player]
 	local replica = Replicas[player]
 	if not profile or not replica then return end
 
-	local finalXP    = xp    or 0
+	local finalXP = xp or 0
 	local finalCoins = coins or 0
 
-	if finalXP > 0 then
-		local xpMult = player:GetAttribute("XPMultiplier")
-		if xpMult and xpMult > 1 then finalXP = math.floor(finalXP * xpMult) end
+	-- Multipliers (Forward-thinking game design!)
+	local xpMult = player:GetAttribute("XPMultiplier") or 1
+	finalXP = math.floor(finalXP * xpMult)
+
+	-- Update Values
+	profile.Data.Coins = math.max(0, profile.Data.Coins + finalCoins)
+	profile.Data.XP += finalXP
+
+	-- Handle Level Ups
+	local reqXP = GetRequiredXP(profile.Data.Level)
+	while profile.Data.XP >= reqXP do
+		profile.Data.XP -= reqXP
+		profile.Data.Level += 1
+		print(player.Name .. " leveled up to " .. profile.Data.Level)
+		reqXP = GetRequiredXP(profile.Data.Level)
 	end
 
-	if finalCoins > 0 then
-		local coinsMult = player:GetAttribute("CoinsMultiplier")
-		if coinsMult and coinsMult > 1 then finalCoins = math.floor(finalCoins * coinsMult) end
-		local vipBonus = player:GetAttribute("VIPCoinBonus")
-		if vipBonus and vipBonus > 0 then finalCoins = math.floor(finalCoins * (1 + vipBonus)) end
-	end
+	-- Update Replicas for UI
+	replica:SetValue({"Coins"}, profile.Data.Coins)
+	replica:SetValue({"XP"}, profile.Data.XP)
+	replica:SetValue({"Level"}, profile.Data.Level)
 
-	if finalXP > 0 then
-		profile.Data.XP += finalXP
-		replica:SetValue({"XP"}, profile.Data.XP)
-		CheckLevelUp(player)
-	end
-
-	if finalCoins > 0 then
-		profile.Data.Coins = math.max(0, profile.Data.Coins + finalCoins)
-		replica:SetValue({"Coins"}, profile.Data.Coins)
-	end
-
-	if not skipPopup then
-		local xpText   = finalXP    > 0 and ("+" .. finalXP    .. " XP")    or ""
-		local coinText = finalCoins > 0 and ("+" .. finalCoins .. " Coins") or ""
+	-- Send UI Feedback
+	if not skipPopup and (finalXP > 0 or finalCoins > 0) then
+		local xpText = finalXP > 0 and "+"..finalXP.." XP" or ""
+		local coinText = finalCoins > 0 and "+"..finalCoins.." Coins" or ""
 		ShowRewardPopup:FireClient(player, xpText, coinText)
 	end
 end
 
+-- ── Helper Exports ──────────────────────────────────────────────────────────
+function DataManager.AddCoins(player, amount) DataManager.AddReward(player, 0, amount, true) end
+function DataManager.AddXP(player, amount) DataManager.AddReward(player, amount, 0, true) end
+
 function DataManager.GiveItem(player, category, itemName)
 	local profile = Profiles[player]
-	if not profile then return end
-
-	local owned = profile.Data.OwnedItems[category]
-	if not owned then
-		warn("[DATA] Unknown category: " .. tostring(category))
-		return
-	end
-
-	for _, v in ipairs(owned) do
-		if v == itemName then return end
-	end
-
-	table.insert(owned, itemName)
-	print("[DATA] " .. player.Name .. " unlocked: " .. itemName .. " in " .. category)
-end
-
-function DataManager.UnlockBundle(player, bundleKey)
-	local Registry = require(ReplicatedStorage:WaitForChild("MarketplaceRegistry"))
-	local bundle = Registry.Bundles[bundleKey]
-	if not bundle then
-		warn("[DATA] Bundle not found: " .. tostring(bundleKey))
-		return
-	end
-
-	if not Registry.IsBundleActive(bundleKey) then
-		warn("[DATA] Bundle not active: " .. bundleKey)
-		return
-	end
-
-	for _, item in ipairs(bundle.Contents) do
-		DataManager.GiveItem(player, item.Category, item.ItemName)
-	end
-
-	print("[DATA] " .. player.Name .. " unlocked bundle: " .. bundle.Name)
-end
-
-function DataManager.SetEquipped(player, slot, itemName)
-	local profile = Profiles[player]
-	if not profile then return end
-
-	profile.Data.Equipped[slot] = itemName
-	local attrName = ATTRIBUTE_MAP[slot]
-	if attrName then player:SetAttribute(attrName, itemName) end
-	print("[DATA] " .. player.Name .. " equipped " .. itemName .. " in " .. slot)
-end
-
-function DataManager.HasItem(player, category, itemName)
-	local profile = Profiles[player]
 	if not profile then return false end
-
 	local owned = profile.Data.OwnedItems[category]
 	if not owned then return false end
 
+	for _, v in ipairs(owned) do
+		if v == itemName then return false end -- Duplicate check
+	end
+
+	table.insert(owned, itemName)
+	-- Update replica so the UI knows immediately
+	local replica = Replicas[player]
+	if replica then replica:SetValue({"OwnedItems", category}, owned) end
+	return true
+end
+
+function DataManager.HasItem(player, category, itemName)
+	local data = DataManager.GetData(player)
+	if not data then return false end
+	local owned = data.OwnedItems[category]
+	if not owned then return false end
 	for _, v in ipairs(owned) do
 		if v == itemName then return true end
 	end
 	return false
 end
 
--- ── GetProductInfo relay ──────────────────────────────────────────────────────
-GetProductInfoRemote.OnServerEvent:Connect(function(player, assetId, infoType)
-	if type(assetId) ~= "number" then return end
-	infoType = infoType or Enum.InfoType.Product
-
-	local ok, info = pcall(function()
-		return MarketplaceService:GetProductInfo(assetId, infoType)
-	end)
-
-	if ok and info then
-		local PriceRelay = getRemote("ProductInfoResult")
-		PriceRelay:FireClient(player, assetId, {
-			Name         = info.Name,
-			PriceInRobux = info.PriceInRobux,
-			IsForSale    = info.IsForSale,
-		})
-	else
-		warn("[DATA] GetProductInfo failed for ID " .. tostring(assetId))
-	end
-end)
-
--- ── Player session ────────────────────────────────────────────────────────────
+-- ── Session Management ───────────────────────────────────────────────────────
 local function PlayerAdded(player)
-	print("[DATA] Loading profile for " .. player.Name .. "...")
-
-	local store   = ProfileStore.New(PROFILE_STORE_NAME, STARTING_DATA)
+	local store = ProfileStore.New("Player_Data_" .. DATA_VERSION, STARTING_DATA)
 	local profile = store:StartSessionAsync(tostring(player.UserId))
 
 	if profile then
@@ -319,63 +143,48 @@ local function PlayerAdded(player)
 
 		profile.OnSessionEnd:Connect(function()
 			Profiles[player] = nil
-			if Replicas[player] then
-				Replicas[player]:Destroy()
-				Replicas[player] = nil
+			if Replicas[player] then 
+				Replicas[player]:Destroy() 
+				Replicas[player] = nil 
 			end
-			if player.Parent then
-				player:Kick("Your data session ended. Please rejoin.")
-			end
+			if player.Parent then player:Kick("Session ended. Rejoin if this was an error!") end
 		end)
 
 		if player:IsDescendantOf(Players) then
 			Profiles[player] = profile
-
 			local replica = ReplicaService.NewReplica({
-				ClassToken  = PLAYER_DATA_CLASS_TOKEN,
-				Data        = profile.Data,
-				Replication = player,
+				ClassToken = PLAYER_DATA_CLASS_TOKEN,
+				Data = profile.Data,
+				Replication = player
 			})
 			Replicas[player] = replica
 
-			syncEquippedAttributes(player)
+			-- Set attributes for other systems to read
+			player:SetAttribute("EquippedWeapon", profile.Data.Equipped.Weapon)
+			player:SetAttribute("EquippedPodium", profile.Data.Equipped.Podium)
+			player:SetAttribute("Level", profile.Data.Level)
 
-			local now  = os.time()
-			local last = profile.Data.LastLogin
-			local diff = now - last
-
-			if diff >= 86400 and diff < 172800 then
-				profile.Data.LoginStreak += 1
-			elseif diff >= 172800 then
-				profile.Data.LoginStreak = 1
-			end
-			profile.Data.LastLogin = now
-			replica:SetValue({"LoginStreak"}, profile.Data.LoginStreak)
-			replica:SetValue({"LastLogin"},   profile.Data.LastLogin)
-
-			print("[DATA] Profile loaded for " .. player.Name
-				.. " | Coins: " .. profile.Data.Coins
-				.. " | Level: " .. profile.Data.Level)
+			print("[DATA] Successfully loaded " .. player.Name)
 		else
 			profile:EndSession()
 		end
 	else
-		player:Kick("Failed to load your fashion profile. Please rejoin.")
-		warn("[DATA] Failed to load profile for " .. player.Name)
+		player:Kick("Data failed to load. Please try again.")
 	end
 end
 
 Players.PlayerAdded:Connect(PlayerAdded)
-for _, p in ipairs(Players:GetPlayers()) do task.spawn(PlayerAdded, p) end
+
+-- Handle existing players (for Studio testing)
+for _, p in ipairs(Players:GetPlayers()) do 
+	task.spawn(PlayerAdded, p) 
+end
 
 Players.PlayerRemoving:Connect(function(player)
-	local profile = Profiles[player]
-	if profile then
-		profile:EndSession()
-		print("[DATA] Session ended for " .. player.Name)
+	if Profiles[player] then 
+		Profiles[player]:EndSession() 
 	end
-	Profiles[player] = nil
-	Replicas[player] = nil
 end)
 
+ServiceRegistry.Register("DataManager", DataManager)
 return DataManager
