@@ -1,0 +1,100 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Debris = game:GetService("Debris")
+
+local player = Players.LocalPlayer
+local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
+
+-- Config
+local REACH = 8 -- How far the scissors can "snip"
+local COOLDOWN = 0.8
+local CRITIC_TEAM = "Critics"
+local DESIGNER_TEAM = "Designers"
+
+local tool = script.Parent
+local handle = tool:WaitForChild("Handle")
+
+-- Remotes
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local FreezeEvent = Remotes:WaitForChild("FreezeEvent")
+
+local debounce = false
+
+-------------------------------------------------
+-- Hit Detection
+-------------------------------------------------
+local function getTarget()
+	local char = player.Character
+	if not char then return nil end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return nil end
+
+	-- Raycast directly in front to find a Designer
+	local rayParams = RaycastParams.new()
+	rayParams.FilterDescendantsInstances = {char}
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+	local result = workspace:Raycast(root.Position, root.CFrame.LookVector * REACH, rayParams)
+
+	if result and result.Instance then
+		local hitChar = result.Instance:FindFirstAncestorOfClass("Model")
+		if hitChar and hitChar:FindFirstChild("Humanoid") then
+			local hitPlayer = Players:GetPlayerFromCharacter(hitChar)
+			-- Ensure they are on the opposing team and not already frozen
+			if hitPlayer and hitPlayer.Team and hitPlayer.Team.Name == DESIGNER_TEAM then
+				if not hitChar:FindFirstChild("CancelCountdown") then -- Check if already podiumed
+					return hitChar
+				end
+			end
+		end
+	end
+	return nil
+end
+
+-------------------------------------------------
+-- Activation
+-------------------------------------------------
+tool.Activated:Connect(function()
+	if debounce then return end
+
+	-- Team Check: Only Critics can use this to freeze
+	if not (player.Team and player.Team.Name == CRITIC_TEAM) then 
+		print("[WEAPON] Only Critics can use BasicScissors.")
+		return 
+	end
+
+	local char = tool.Parent
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hum then return end
+
+	debounce = true
+
+	-- Play Snip Animation (using existing SNIP sound from your SoundService)
+	SoundService.PlayLocal("FabricPickup") -- Reusing the snip/zip sound for the swing
+
+	-- Visual swing (simple rotation)
+	local originalHandleC0 = handle.CFrame
+	-- You'd usually play an AnimationTrack here, but let's trigger the logic:
+
+	local targetChar = getTarget()
+	if targetChar then
+		print("[WEAPON] Snipped: " .. targetChar.Name)
+
+		-- Trigger the server-side TagManager logic
+		FreezeEvent:FireServer(targetChar)
+
+		-- Hit feedback
+		SoundService.PlayLocal("AbilityHit")
+	else
+		-- Miss feedback
+		SoundService.PlayLocal("AbilityMiss")
+	end
+
+	task.wait(COOLDOWN)
+	debounce = false
+end)
+
+-- Tool setup
+tool.Equipped:Connect(function()
+	print("[WEAPON] BasicScissors equipped. Ready to cancel some designers.")
+end)
