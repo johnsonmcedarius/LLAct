@@ -36,8 +36,8 @@ local MAX_INTERACTION_DISTANCE = 30
 local RACK_COOLDOWN            = 5
 local BIN_HITBOX_SIZE          = Vector3.new(10, 8, 10)
 local SABOTAGE_HOLD_DURATION   = 3.5
-local SABOTAGED_PICKUP_HOLD    = 3.0
-local NORMAL_PICKUP_HOLD       = 0
+local SABOTAGED_PICKUP_HOLD    = 5.0
+local NORMAL_PICKUP_HOLD       = 2.5
 local TANGLE_DURATION          = 60
 local SABOTAGE_RULE_OF_TWO     = 2
 local SABOTAGE_COOLDOWN        = 30
@@ -55,6 +55,29 @@ local trendTrackerFired      = false
 local criticSabotageQueue    = {}
 local criticSabotageCooldown = {}
 local tangleTimers           = {}
+
+-- // THE FIX: ADDED FUNCTIONS // --
+
+local function recordSabotage(critic, rack)
+	print("[SABOTAGE] " .. critic.Name .. " tangled up a rack!")
+	-- Future-proofing for your reward stats
+end
+
+local function addGlobalFabric(amount)
+	globalFabricCount += amount
+	local pct = globalFabricCount / Config.TotalFabricNeeded
+	UpdateFabricUI:FireAllClients(pct)
+
+	-- 75% warning trigger: Main character energy starts here
+	if pct >= 0.75 and lastFiredPercentage < 0.75 then
+		local Show75Warning = Remotes:FindFirstChild("Show75Warning")
+		if Show75Warning then Show75Warning:FireAllClients() end
+	end
+	lastFiredPercentage = pct
+	print("[FABRIC] Global progress: " .. globalFabricCount .. "/" .. Config.TotalFabricNeeded)
+end
+
+-- // END OF FIX // --
 
 local function setRackState(rack, sabotaged)
 	local regular  = rack:FindFirstChild("RegularState")
@@ -98,7 +121,6 @@ local function unsabotageRack(rack)
 	setRackState(rack, false)
 	local dp = rack:FindFirstChild("DesignerPickup")
 
-	-- Reset prompt settings; LocalScript handles visibility via tags
 	if dp then 
 		dp.HoldDuration = NORMAL_PICKUP_HOLD
 		dp.ActionText = "Collect Fabric"
@@ -122,28 +144,27 @@ local function setupFabricRack(rack)
 	setRackState(rack, false)
 
 	-- DESIGNER PROMPT
-	local dp        = Instance.new("ProximityPrompt")
-	dp.Name         = "DesignerPickup"
-	dp.ActionText   = "Collect Fabric"
-	dp.ObjectText   = "Fabric Rack"
+	local dp         = Instance.new("ProximityPrompt")
+	dp.Name          = "DesignerPickup"
+	dp.ActionText    = "Collect Fabric"
+	dp.ObjectText    = "Fabric Rack"
 	dp.HoldDuration = NORMAL_PICKUP_HOLD
 	dp.RequiresLineOfSight   = false
 	dp.MaxActivationDistance = 8
-	dp.Parent       = rack
+	dp.Parent        = rack
 	CollectionService:AddTag(dp, "DesignerPrompt")
 
 	-- CRITIC PROMPT
-	local cp        = Instance.new("ProximityPrompt")
-	cp.Name         = "CriticSabotage"
-	cp.ActionText   = "Sabotage Rack"
-	cp.ObjectText   = "Fabric Rack"
+	local cp         = Instance.new("ProximityPrompt")
+	cp.Name          = "CriticSabotage"
+	cp.ActionText    = "Sabotage Rack"
+	cp.ObjectText    = "Fabric Rack"
 	cp.HoldDuration = SABOTAGE_HOLD_DURATION
 	cp.RequiresLineOfSight   = false
 	cp.MaxActivationDistance = 8
-	cp.Parent       = rack
+	cp.Parent        = rack
 	CollectionService:AddTag(cp, "CriticPrompt")
 
-	-- Server sets them both enabled; InteractionController filters them on the client
 	dp.Enabled = true
 	cp.Enabled = true
 
@@ -151,7 +172,6 @@ local function setupFabricRack(rack)
 		if not (player.Team and player.Team.Name == Config.DesignerTeamName) then return end
 		if rack:GetAttribute("IsOnCooldown") then return end
 
-		-- Inventory check
 		local hasFabric = player.Backpack:FindFirstChild("FBRoll") or (player.Character and player.Character:FindFirstChild("FBRoll"))
 		if hasFabric then return end
 
@@ -165,7 +185,6 @@ local function setupFabricRack(rack)
 
 		local wasSabotaged = rack:GetAttribute("IsSabotaged")
 
-		-- GIVE THE TOOL
 		local assets = ReplicatedStorage:FindFirstChild("Assets")
 		local fbAsset = assets and assets:FindFirstChild("FBRoll")
 		if fbAsset then fbAsset:Clone().Parent = player.Backpack end
@@ -178,14 +197,13 @@ local function setupFabricRack(rack)
 		if wasSabotaged then
 			alertCritics(rack, true)
 			if tangleTimers[rack] then task.cancel(tangleTimers[rack]) tangleTimers[rack] = nil end
-			unsabotageRack(rack) -- FIXED: Clear sabotage state immediately on pickup
+			unsabotageRack(rack)
 		else
 			alertCritics(rack, false)
 		end
 
 		RewardTracker.OnFabricCollect(player)
 
-		-- COOLDOWN LOGIC
 		rack:SetAttribute("IsOnCooldown", true)
 		rack:SetAttribute("IsSabotaged",  false)
 		dp.Enabled = false
@@ -195,8 +213,8 @@ local function setupFabricRack(rack)
 		task.delay(RACK_COOLDOWN, function()
 			if not rack or not rack.Parent then return end
 			rack:SetAttribute("IsOnCooldown", false)
-			dp.Enabled = true
-			cp.Enabled = true
+			dp.Enabled = false
+			cp.Enabled = false
 			setRackState(rack, false)
 		end)
 	end)
@@ -231,7 +249,6 @@ local function setupFabricRack(rack)
 		tangleTimers[rack] = task.delay(TANGLE_DURATION, function()
 			unsabotageRack(rack)
 			print("[SABOTAGE] Tangle expired on rack.")
-
 		end)
 	end)
 end
@@ -244,8 +261,8 @@ local function setupFabricBin(bin)
 	local hitbox = bin:FindFirstChild("DepositHitbox")
 	if not hitbox then
 		hitbox              = Instance.new("Part")
-		hitbox.Name         = "DepositHitbox"
-		hitbox.Size         = BIN_HITBOX_SIZE
+		hitbox.Name          = "DepositHitbox"
+		hitbox.Size          = BIN_HITBOX_SIZE
 		hitbox.Transparency = 1
 		hitbox.CanCollide   = false
 		hitbox.Anchored     = true
@@ -313,7 +330,7 @@ local function resetAll()
 			if dp then 
 				dp.HoldDuration = NORMAL_PICKUP_HOLD 
 				dp.ActionText = "Collect Fabric" 
-				dp.Enabled = true -- Reset state
+				dp.Enabled = true
 			end
 			local cp = rack:FindFirstChild("CriticSabotage")
 			if cp then cp.Enabled = true end
