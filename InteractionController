@@ -4,7 +4,7 @@ local Players = game:GetService("Players")
 local player = Players.LocalPlayer
 
 local function updateSinglePrompt(obj)
-	-- Make sure we are actually looking at the prompt
+	-- Look for the prompt
 	local prompt = obj:IsA("ProximityPrompt") and obj or obj:FindFirstChildOfClass("ProximityPrompt")
 
 	-- If the prompt isn't there yet, wait a tiny bit for it to spawn
@@ -14,18 +14,25 @@ local function updateSinglePrompt(obj)
 
 	if not prompt then return end
 
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+
+	-- THE FIX: If you're anchored, you're frozen/podiumed
+	local isFrozen = root and root.Anchored or false
+
 	local teamName = (player.Team and player.Team.Name) or ""
 	local isDesigner = (teamName == "Designers")
 	local isCritic = (teamName == "Critics")
 
 	-- Handle Designer Prompts
 	if CollectionService:HasTag(obj, "DesignerPrompt") or CollectionService:HasTag(prompt, "DesignerPrompt") then
-		if isDesigner then
+		-- Designers can only interact if they aren't currently frozen
+		if isDesigner and not isFrozen then
 			if prompt.ActionText:find("Give") then
-				local char = player.Character
 				local hasFabric = player.Backpack:FindFirstChild("FBRoll") or (char and char:FindFirstChild("FBRoll"))
 				prompt.Enabled = (hasFabric ~= nil)
 			else
+				-- Unfreeze, Pickup, etc.
 				prompt.Enabled = true
 			end
 		else
@@ -34,7 +41,8 @@ local function updateSinglePrompt(obj)
 
 		-- Handle Critic Prompts
 	elseif CollectionService:HasTag(obj, "CriticPrompt") or CollectionService:HasTag(prompt, "CriticPrompt") then
-		prompt.Enabled = isCritic
+		-- Critics aren't usually frozen, but let's keep it tight
+		prompt.Enabled = isCritic and not isFrozen
 	end
 end
 
@@ -49,8 +57,16 @@ end
 
 -- Refresh logic
 local function hookCharacter(char)
+	-- Update when tools are equipped/unequipped
 	char.ChildAdded:Connect(updateAllPrompts)
 	char.ChildRemoved:Connect(updateAllPrompts)
+
+	-- Update when the player gets frozen (Anchored changes)
+	local root = char:WaitForChild("HumanoidRootPart", 5)
+	if root then
+		root:GetPropertyChangedSignal("Anchored"):Connect(updateAllPrompts)
+	end
+
 	updateAllPrompts()
 end
 
@@ -64,9 +80,9 @@ player.Backpack.ChildRemoved:Connect(updateAllPrompts)
 -- Listen for Team changes
 player:GetPropertyChangedSignal("Team"):Connect(updateAllPrompts)
 
--- The MVP Listeners: This handles new Racks spawning in
+-- The MVP Listeners: This handles new Racks/Podiums spawning in
 CollectionService:GetInstanceAddedSignal("DesignerPrompt"):Connect(function(obj)
-	task.wait(0.1) -- Give the server a millisecond to parent the prompt
+	task.wait(0.1) 
 	updateSinglePrompt(obj)
 end)
 
@@ -75,7 +91,7 @@ CollectionService:GetInstanceAddedSignal("CriticPrompt"):Connect(function(obj)
 	updateSinglePrompt(obj)
 end)
 
--- Loop to catch any stragglers (Optional safety net)
+-- Loop to catch any stragglers
 task.spawn(function()
 	while task.wait(2) do
 		updateAllPrompts()
