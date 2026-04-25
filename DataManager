@@ -1,4 +1,4 @@
-local Players             = game:GetService("Players")
+local Players         = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local MarketplaceService  = game:GetService("MarketplaceService")
@@ -20,7 +20,7 @@ end
 local ShowRewardPopup = getRemote("ShowRewardPopup")
 
 -- ── Constants ────────────────────────────────────────────────────────────────
-local DATA_VERSION = "v1.6" -- The fix version
+local DATA_VERSION = "v1.6" 
 local PLAYER_DATA_CLASS_TOKEN = ReplicaService.NewClassToken("PlayerData")
 
 local STARTING_DATA = {
@@ -31,12 +31,14 @@ local STARTING_DATA = {
 		Skins = {"Default"}, 
 		Weapons = {"BasicScissors"}, 
 		Podiums = {"BasicPodium"},
+		Abilities = {},
 		Emotes = {"Wave"}
 	},
 	Equipped = { 
 		Skin = "Default", 
 		Weapon = "BasicScissors", 
 		Podium = "BasicPodium",
+		Ability1 = "",
 		Emote = "Wave"
 	},
 	PityCounter = {}, 
@@ -71,15 +73,12 @@ function DataManager.AddReward(player, xp, coins, skipPopup)
 	local finalXP = xp or 0
 	local finalCoins = coins or 0
 
-	-- Multipliers (Forward-thinking game design!)
 	local xpMult = player:GetAttribute("XPMultiplier") or 1
 	finalXP = math.floor(finalXP * xpMult)
 
-	-- Update Values
 	profile.Data.Coins = math.max(0, profile.Data.Coins + finalCoins)
 	profile.Data.XP += finalXP
 
-	-- Handle Level Ups
 	local reqXP = GetRequiredXP(profile.Data.Level)
 	while profile.Data.XP >= reqXP do
 		profile.Data.XP -= reqXP
@@ -88,17 +87,34 @@ function DataManager.AddReward(player, xp, coins, skipPopup)
 		reqXP = GetRequiredXP(profile.Data.Level)
 	end
 
-	-- Update Replicas for UI
 	replica:SetValue({"Coins"}, profile.Data.Coins)
 	replica:SetValue({"XP"}, profile.Data.XP)
 	replica:SetValue({"Level"}, profile.Data.Level)
+	player:SetAttribute("Level", profile.Data.Level)
 
-	-- Send UI Feedback
 	if not skipPopup and (finalXP > 0 or finalCoins > 0) then
 		local xpText = finalXP > 0 and "+"..finalXP.." XP" or ""
 		local coinText = finalCoins > 0 and "+"..finalCoins.." Coins" or ""
 		ShowRewardPopup:FireClient(player, xpText, coinText)
 	end
+end
+
+-- // EQUIPPING SYSTEM // --
+function DataManager.UpdateEquipped(player, key, value)
+	local profile = Profiles[player]
+	local replica = Replicas[player]
+	if not profile or not replica then return end
+
+	-- 1. Update the Profile table
+	profile.Data.Equipped[key] = value
+
+	-- 2. Update the Replica so the HUD sees it instantly
+	replica:SetValue({"Equipped", key}, value)
+
+	-- 3. Update Attributes (Great for visual systems/VFX)
+	player:SetAttribute("Equipped" .. key, value)
+
+	print("[DATA] Updated " .. player.Name .. "'s " .. key .. " to " .. tostring(value))
 end
 
 -- ── Helper Exports ──────────────────────────────────────────────────────────
@@ -112,11 +128,10 @@ function DataManager.GiveItem(player, category, itemName)
 	if not owned then return false end
 
 	for _, v in ipairs(owned) do
-		if v == itemName then return false end -- Duplicate check
+		if v == itemName then return false end 
 	end
 
 	table.insert(owned, itemName)
-	-- Update replica so the UI knows immediately
 	local replica = Replicas[player]
 	if replica then replica:SetValue({"OwnedItems", category}, owned) end
 	return true
@@ -159,10 +174,11 @@ local function PlayerAdded(player)
 			})
 			Replicas[player] = replica
 
-			-- Set attributes for other systems to read
-			player:SetAttribute("EquippedWeapon", profile.Data.Equipped.Weapon)
-			player:SetAttribute("EquippedPodium", profile.Data.Equipped.Podium)
+			-- Initial Attribute Sync
 			player:SetAttribute("Level", profile.Data.Level)
+			for key, value in pairs(profile.Data.Equipped) do
+				player:SetAttribute("Equipped" .. key, value)
+			end
 
 			print("[DATA] Successfully loaded " .. player.Name)
 		else
@@ -175,7 +191,6 @@ end
 
 Players.PlayerAdded:Connect(PlayerAdded)
 
--- Handle existing players (for Studio testing)
 for _, p in ipairs(Players:GetPlayers()) do 
 	task.spawn(PlayerAdded, p) 
 end
