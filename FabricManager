@@ -8,7 +8,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
 local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
 
--- Await hard dependencies
+
 local ShowstopperService = ServiceRegistry.Await("ShowstopperService")
 local RewardTracker      = ServiceRegistry.Await("RewardTracker")
 
@@ -56,11 +56,10 @@ local criticSabotageQueue    = {}
 local criticSabotageCooldown = {}
 local tangleTimers           = {}
 
--- // THE FIX: ADDED FUNCTIONS // --
+
 
 local function recordSabotage(critic, rack)
 	print("[SABOTAGE] " .. critic.Name .. " tangled up a rack!")
-	-- Future-proofing for your reward stats
 end
 
 local function addGlobalFabric(amount)
@@ -68,16 +67,10 @@ local function addGlobalFabric(amount)
 	local pct = globalFabricCount / Config.TotalFabricNeeded
 	UpdateFabricUI:FireAllClients(pct)
 
-	-- 75% warning trigger: Main character energy starts here
-	if pct >= 0.75 and lastFiredPercentage < 0.75 then
-		local Show75Warning = Remotes:FindFirstChild("Show75Warning")
-		if Show75Warning then Show75Warning:FireAllClients() end
-	end
 	lastFiredPercentage = pct
 	print("[FABRIC] Global progress: " .. globalFabricCount .. "/" .. Config.TotalFabricNeeded)
 end
 
--- // END OF FIX // --
 
 local function setRackState(rack, sabotaged)
 	local regular  = rack:FindFirstChild("RegularState")
@@ -151,7 +144,7 @@ local function setupFabricRack(rack)
 	dp.HoldDuration = NORMAL_PICKUP_HOLD
 	dp.RequiresLineOfSight   = false
 	dp.MaxActivationDistance = 8
-	dp.Parent        = rack
+	dp.Parent         = rack
 	CollectionService:AddTag(dp, "DesignerPrompt")
 
 	-- CRITIC PROMPT
@@ -162,7 +155,7 @@ local function setupFabricRack(rack)
 	cp.HoldDuration = SABOTAGE_HOLD_DURATION
 	cp.RequiresLineOfSight   = false
 	cp.MaxActivationDistance = 8
-	cp.Parent        = rack
+	cp.Parent         = rack
 	CollectionService:AddTag(cp, "CriticPrompt")
 
 	dp.Enabled = true
