@@ -1,6 +1,3 @@
--- AbilitySlotService (Script in ServerScriptService)
--- FIXED: ServiceRegistry replaces _G.DataManager and _G.DailyLookbook
-
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
@@ -16,116 +13,100 @@ local function getRemote(name)
 	return r
 end
 
-local AbilitySlotUnlock  = getRemote("AbilitySlotUnlock")
-local SpinAbility        = getRemote("SpinAbility")
+-- Remotes
 local UpdateAbilitySlots = getRemote("UpdateAbilitySlots")
+local PurchaseAbility    = getRemote("PurchaseAbility")
+local EquipAbility       = getRemote("EquipAbility")
 
-local SPIN_COST = 100
-
-local AbilityPool = {
-	{Name = "Hairspray Bomb",  Rarity = "Common",    Weight = 50},
-	{Name = "Camera Flash",    Rarity = "Common",    Weight = 50},
-	{Name = "High Heel Trap",  Rarity = "Common",    Weight = 50},
-	{Name = "Double Spray",    Rarity = "Rare",      Weight = 25},
-	{Name = "Chain Flash",     Rarity = "Rare",      Weight = 25},
-	{Name = "Heel Storm",      Rarity = "Epic",      Weight = 10},
-	{Name = "Fashion Surge",   Rarity = "Epic",      Weight = 10},
-	{Name = "The Takedown",    Rarity = "Legendary", Weight = 4},
-	{Name = "Style Shock",     Rarity = "Mythic",    Weight = 1},
+!
+local PRICES = { 
+	Common    = 500, 
+	Rare      = 1200, 
+	Epic      = 3000, 
+	Legendary = 7500, 
+	Mythic    = 20000 
 }
 
-local slotData = {}
+local AbilityPool = {
+	{Name = "Glitter Perfume Bomb",  Rarity = "Common"},
+	{Name = "Camera Flash",    Rarity = "Common"},
+	{Name = "High Heel Trap",  Rarity = "Common"},
+	{Name = "Double Spray",    Rarity = "Rare"},
+	{Name = "Chain Flash",     Rarity = "Rare"},
+	{Name = "Heel Storm",      Rarity = "Epic"},
+	{Name = "Fashion Surge",   Rarity = "Epic"},
+	{Name = "The Takedown",    Rarity = "Legendary"},
+	{Name = "Style Shock",     Rarity = "Mythic"},
+}
 
-local function getSlots(player)
-	if not slotData[player.UserId] then
-		local unlocked = player:GetAttribute("UnlockedAbilitySlots") or 1
-		slotData[player.UserId] = {
-			slots         = {nil, nil, nil},
-			unlockedSlots = unlocked,
-		}
+
+local function getAbilityData(name)
+	for _, ability in ipairs(AbilityPool) do
+		if ability.Name == name then return ability end
 	end
-	return slotData[player.UserId]
+	return nil
 end
+
 
 local function syncToClient(player)
-	local data = getSlots(player)
-	UpdateAbilitySlots:FireClient(player, data.slots, data.unlockedSlots)
+	local data = DataManager.GetData(player)
+	if not data then return end
+
+
+	local equipped = {data.Equipped.Ability1 or "Empty"}
+	UpdateAbilitySlots:FireClient(player, equipped, 1)
 end
 
-local function onUnlockedSlotsChanged(player)
-	local unlocked = player:GetAttribute("UnlockedAbilitySlots") or 1
-	local data = getSlots(player)
-	if unlocked > data.unlockedSlots then
-		data.unlockedSlots = unlocked
-		syncToClient(player)
-		AbilitySlotUnlock:FireClient(player, unlocked)
-		print("[ABILITY] " .. player.Name .. " slot " .. unlocked .. " now active.")
-	end
-end
 
-local function watchPlayer(player)
-	player:GetAttributeChangedSignal("UnlockedAbilitySlots"):Connect(function()
-		onUnlockedSlotsChanged(player)
-	end)
-end
+PurchaseAbility.OnServerEvent:Connect(function(player, abilityName)
+	local ability = getAbilityData(abilityName)
 
-local function spinAbility()
-	local weighted = {}
-	for _, ability in ipairs(AbilityPool) do
-		for _ = 1, ability.Weight do table.insert(weighted, ability) end
-	end
-	return weighted[math.random(#weighted)]
-end
-
-SpinAbility.OnServerEvent:Connect(function(player, slotIndex)
-	if type(slotIndex) ~= "number" then return end
-	slotIndex = math.clamp(math.floor(slotIndex), 1, 3)
-
-	local data = getSlots(player)
-	if slotIndex > data.unlockedSlots then
-		print("[ABILITY] " .. player.Name .. " slot " .. slotIndex .. " locked.")
-		return
+	if not ability or DataManager.HasItem(player, "Abilities", abilityName) then 
+		return 
 	end
 
-	local coins = DataManager.GetCoins(player)
-	if coins < SPIN_COST then
-		print("[ABILITY] " .. player.Name .. " can't afford spin.")
-		return
+	local cost = PRICES[ability.Rarity] or 500
+	if DataManager.GetCoins(player) >= cost then
+		DataManager.AddCoins(player, -cost)
+		DataManager.GiveItem(player, "Abilities", abilityName)
+		print("[SHOP] " .. player.Name .. " now owns " .. abilityName)
+	else
+		print("[SHOP] " .. player.Name .. " is too broke for " .. abilityName)
 	end
-	DataManager.AddCoins(player, -SPIN_COST)
-
-	local result = spinAbility()
-	data.slots[slotIndex] = result.Name
-
-	print("[ABILITY] " .. player.Name .. " slot " .. slotIndex .. " -> " .. result.Name)
-	syncToClient(player)
-
-	local SpinResult = getRemote("AbilitySpinResult")
-	SpinResult:FireClient(player, slotIndex, result)
-
-	-- Optional dep
-	local lb = ServiceRegistry.Get("DailyLookbook")
-	if lb then lb.AddProgress(player, "Dashes", 1) end
 end)
 
+
+EquipAbility.OnServerEvent:Connect(function(player, abilityName)
+	-- Must own it to wear it
+	if not DataManager.HasItem(player, "Abilities", abilityName) then 
+		return 
+	end
+
+	if DataManager.UpdateEquipped then
+		DataManager.UpdateEquipped(player, "Ability1", abilityName)
+		print("[EQUIP] " .. player.Name .. " equipped " .. abilityName)
+		syncToClient(player)
+	else
+		warn("[DATA] DataManager.UpdateEquipped is missing! Ability didn't sync.")
+	end
+end)
+
+
 local AbilitySlotService = {
-	GetSlots = function(player) return getSlots(player).slots end,
+	GetEquipped = function(player) 
+		local data = DataManager.GetData(player)
+		return data and data.Equipped.Ability1 or ""
+	end,
 }
 
 Players.PlayerAdded:Connect(function(player)
 	task.wait(3)
-	watchPlayer(player)
 	syncToClient(player)
 end)
 
 for _, p in ipairs(Players:GetPlayers()) do
-	watchPlayer(p)
 	task.spawn(function() task.wait(3) syncToClient(p) end)
 end
-
-Players.PlayerRemoving:Connect(function(p)
-	slotData[p.UserId] = nil
-end)
 
 ServiceRegistry.Register("AbilitySlotService", AbilitySlotService)
 return AbilitySlotService
