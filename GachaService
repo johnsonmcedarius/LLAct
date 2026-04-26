@@ -1,96 +1,53 @@
--- GachaService (Script in ServerScriptService)
--- FIXED:
---   1. Uses ServiceRegistry.Await("DataManager") — no _G race condition.
---   2. Pity counters are loaded from DataManager's persisted PityCounter on
---      player join and written back after every spin, so they survive rejoins.
---   3. RoundEvents used for round reset instead of StatusText string matching.
-
-local Players            = game:GetService("Players")
-local ReplicatedStorage  = game:GetService("ReplicatedStorage")
-local MarketplaceService = game:GetService("MarketplaceService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
-
--- Await DataManager — yields until it's ready, no race condition
 local DataManager = ServiceRegistry.Await("DataManager")
+local Config = require(ReplicatedStorage:WaitForChild("SharedConfig"))
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local CrateResult = Remotes:WaitForChild("CrateResult")
+local BatchCrateResults = Remotes:WaitForChild("BatchCrateResults")
+local GlobalAnnouncement = Remotes:WaitForChild("GlobalAnnouncement")
 
-local function getRemote(name)
-	local r = Remotes:FindFirstChild(name)
-	if not r then r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes end
-	return r
-end
-
-local OpenCrate         = getRemote("OpenCrate")
-local CrateResult       = getRemote("CrateResult")
-local BatchOpenCrate    = getRemote("BatchOpenCrate")
-local BatchCrateResults = getRemote("BatchCrateResults")
-local GlobalAnnouncement = getRemote("GlobalAnnouncement")
-
--- ── Loot tables ───────────────────────────────────────────────────────────────
-local RARITY_WEIGHTS = {
-	Common    = 60,
-	Rare      = 25,
-	Epic      = 10,
-	Legendary = 4,
-	Mythic    = 1,
-}
+-- ── Loot Tables ──────────────────────────────────────────────────────────────
+local RARITY_WEIGHTS = { Common = 60, Rare = 25, Epic = 10, Legendary = 4, Mythic = 1 }
 
 local CoinCratePool = {
-	{Name = "Lava Effect",        Category = "Effects",     Rarity = "Legendary"},
-	{Name = "Gold Effect",        Category = "Effects",     Rarity = "Epic"},
-	{Name = "Ice Effect",         Category = "Effects",     Rarity = "Rare"},
-	{Name = "Static Effect",      Category = "Effects",     Rarity = "Common"},
-	{Name = "Shadow Effect",      Category = "Effects",     Rarity = "Mythic"},
-	{Name = "Golden Scissors",    Category = "WeaponSkins", Rarity = "Legendary"},
-	{Name = "Diamond LightStick", Category = "WeaponSkins", Rarity = "Mythic"},
-	{Name = "Rose Gold Stiletto", Category = "WeaponSkins", Rarity = "Epic"},
-	{Name = "Chrome Scissors",    Category = "WeaponSkins", Rarity = "Rare"},
-	{Name = "Neon Scissors",      Category = "WeaponSkins", Rarity = "Common"},
+	{Name = "Lava Flow",        Category = Config.CATEGORIES.SKIN_EFFECTS, Rarity = "Legendary"},
+	{Name = "Ice Shimmer",      Category = Config.CATEGORIES.SKIN_EFFECTS, Rarity = "Epic"},
+	{Name = "Static Glitch",    Category = Config.CATEGORIES.SKIN_EFFECTS, Rarity = "Common"},
+	{Name = "Golden Scissors",  Category = Config.CATEGORIES.WEAPON_SKINS, Rarity = "Legendary"},
+	{Name = "Chrome Basic Scissors",      Category = Config.CATEGORIES.WEAPON_SKINS, Rarity = "Rare"},
+	{Name = "Fashion Pulse",    Category = Config.CATEGORIES.SHOWSTOPPERS, Rarity = "Mythic"},
+    {Name = "Neon Snippers",    Category = Config.CATEGORIES.WEAPON_SKINS, Rarity = "Common"},
 }
 
 local RobuxCratePool = {
-	{Name = "K-Pop Star",        Category = "Skins",   Rarity = "Legendary"},
-	{Name = "Popstar Diva",      Category = "Skins",   Rarity = "Mythic"},
-	{Name = "Memphis Designer",  Category = "Skins",   Rarity = "Epic"},
-	{Name = "Runway Classic",    Category = "Skins",   Rarity = "Rare"},
-	{Name = "Studio Casual",     Category = "Skins",   Rarity = "Common"},
-	{Name = "Diamond Throne",    Category = "Podiums", Rarity = "Mythic"},
-	{Name = "Gold Pedestal",     Category = "Podiums", Rarity = "Legendary"},
-	{Name = "Crystal Stage",     Category = "Podiums", Rarity = "Epic"},
-	{Name = "Marble Base",       Category = "Podiums", Rarity = "Rare"},
-	{Name = "Basic Podium Plus", Category = "Podiums", Rarity = "Common"},
-	{Name = "Vogue Walk",        Category = "Emotes",  Rarity = "Legendary"},
-	{Name = "Catwalk Strut",     Category = "Emotes",  Rarity = "Epic"},
-	{Name = "Finger Gun Pose",   Category = "Emotes",  Rarity = "Rare"},
-	{Name = "Snap and Point",    Category = "Emotes",  Rarity = "Common"},
+	{Name = "Popstar Diva",     Category = Config.CATEGORIES.SKINS,        Rarity = "Mythic"},
+	{Name = "Diamond Throne",   Category = Config.CATEGORIES.PODIUMS,      Rarity = "Mythic"},
+	{Name = "Galaxy Skin",      Category = Config.CATEGORIES.SKIN_EFFECTS, Rarity = "Legendary"},
+	{Name = "Runway Finale",    Category = Config.CATEGORIES.SHOWSTOPPERS, Rarity = "Legendary"},
+	{Name = "Vogue Strut",      Category = Config.CATEGORIES.EMOTES,       Rarity = "Epic"},
+    {Name = "Memphis Designer", Category = Config.CATEGORIES.SKINS,        Rarity = "Epic"},
 }
 
-local COIN_CRATE_COST  = 500
-local ROBUX_PRODUCT_ID = 0   -- TODO: Replace with real Developer Product ID
-local PITY_THRESHOLD   = 10
-
--- ── Pity helpers (read/write directly from persisted DataManager data) ────────
--- Pity is stored in profile.Data.PityCounter, so it survives disconnects.
-
+-- ── Pity Helpers ─────────────────────────────────────────────────────────────
 local function getPity(player, crateType)
 	local data = DataManager.GetData(player)
-	if not data then return 0 end
-	if not data.PityCounter then data.PityCounter = {} end
-	return data.PityCounter[crateType] or 0
+	return (data and data.PityCounter and data.PityCounter[crateType]) or 0
 end
 
 local function setPity(player, crateType, value)
 	local data = DataManager.GetData(player)
-	if not data then return end
-	if not data.PityCounter then data.PityCounter = {} end
-	data.PityCounter[crateType] = value
-	-- Profile auto-saves on session end via ProfileStore — no extra call needed.
+	if data then
+		if not data.PityCounter then data.PityCounter = {} end
+		data.PityCounter[crateType] = value
+	end
 end
 
--- ── Weighted random pull ──────────────────────────────────────────────────────
+-- ── Logic ────────────────────────────────────────────────────────────────────
 local function pickItem(pool, guaranteeLegendary)
 	local weighted = {}
 	for _, item in ipairs(pool) do
@@ -103,25 +60,18 @@ local function pickItem(pool, guaranteeLegendary)
 			for _ = 1, weight do table.insert(weighted, item) end
 		end
 	end
-
-	if #weighted == 0 then
-		for _, item in ipairs(pool) do
-			if item.Rarity == "Legendary" then return item end
-		end
-		return pool[1]
-	end
-
+    
+    -- Safety fallback if pity roll pool is empty
+    if #weighted == 0 then return pool[1] end
 	return weighted[math.random(#weighted)]
 end
 
--- ── Single spin ───────────────────────────────────────────────────────────────
 local function processSpin(player, crateType)
 	local pool      = (crateType == "CoinDesignerCrate") and CoinCratePool or RobuxCratePool
 	local pity      = getPity(player, crateType)
-	local guarantee = pity >= PITY_THRESHOLD
+	local guarantee = pity >= Config.PITY_THRESHOLD
 	local item      = pickItem(pool, guarantee)
 
-	-- Update persisted pity counter
 	if item.Rarity == "Legendary" or item.Rarity == "Mythic" then
 		setPity(player, crateType, 0)
 	else
@@ -131,104 +81,61 @@ local function processSpin(player, crateType)
 	DataManager.GiveItem(player, item.Category, item.Name)
 
 	if item.Rarity == "Mythic" then
-		local msg = player.Name .. " just pulled a MYTHIC: " .. item.Name .. "!"
-		GlobalAnnouncement:FireAllClients(msg)
-		print("[GACHA] MYTHIC PULL: " .. msg)
+		GlobalAnnouncement:FireAllClients(player.Name .. " just pulled a MYTHIC: " .. item.Name .. "!")
 	end
 
-	print("[GACHA] " .. player.Name .. " got " .. item.Name
-		.. " (" .. item.Rarity .. ") from " .. crateType
-		.. " | pity was " .. pity)
-
-	return {
-		Name     = item.Name,
-		Category = item.Category,
-		Rarity   = item.Rarity,
-	}
+	return { Name = item.Name, Category = item.Category, Rarity = item.Rarity }
 end
 
--- ── Single crate open ─────────────────────────────────────────────────────────
-OpenCrate.OnServerEvent:Connect(function(player, crateType)
-	if type(crateType) ~= "string" then return end
-	if crateType ~= "CoinDesignerCrate" and crateType ~= "RobuxDesignerCrate" then
-		warn("[GACHA] Invalid crate type: " .. crateType)
-		return
-	end
+-- ── Remote Listeners ─────────────────────────────────────────────────────────
 
+-- Single Open
+Remotes:WaitForChild("OpenCrate").OnServerEvent:Connect(function(player, crateType)
 	local data = DataManager.GetData(player)
-	if not data then return end
-
-	local crateCount = (data.Inventory and data.Inventory[crateType]) or 0
-	if crateCount <= 0 then
-		print("[GACHA] " .. player.Name .. " has no " .. crateType)
-		return
+	if data and data.Inventory and (data.Inventory[crateType] or 0) > 0 then
+		data.Inventory[crateType] -= 1
+		local result = processSpin(player, crateType)
+		CrateResult:FireClient(player, crateType, result)
 	end
-
-	data.Inventory[crateType] = math.max(0, crateCount - 1)
-
-	local result = processSpin(player, crateType)
-	CrateResult:FireClient(player, crateType, result)
 end)
 
--- ── Batch crate open ──────────────────────────────────────────────────────────
-BatchOpenCrate.OnServerEvent:Connect(function(player, crateType, count)
-	if type(crateType) ~= "string" then return end
-	if type(count) ~= "number" then return end
-	count = math.clamp(math.floor(count), 1, 10)
-
-	if crateType ~= "CoinDesignerCrate" and crateType ~= "RobuxDesignerCrate" then return end
-
-	local data = DataManager.GetData(player)
-	if not data then return end
-
-	local crateCount  = (data.Inventory and data.Inventory[crateType]) or 0
-	local actualCount = math.min(count, crateCount)
-
-	if actualCount <= 0 then
-		print("[GACHA] " .. player.Name .. " not enough crates.")
-		return
-	end
-
-	data.Inventory[crateType] = crateCount - actualCount
-
-	local results = {}
-	for _ = 1, actualCount do
-		table.insert(results, processSpin(player, crateType))
-	end
-
-	BatchCrateResults:FireClient(player, crateType, results)
+-- Batch Open (Up to 10)
+Remotes:WaitForChild("BatchOpenCrate").OnServerEvent:Connect(function(player, crateType, count)
+    local count = math.clamp(math.floor(count or 1), 1, 10)
+    local data = DataManager.GetData(player)
+    
+    if data and data.Inventory and (data.Inventory[crateType] or 0) >= count then
+        data.Inventory[crateType] -= count
+        local results = {}
+        for i = 1, count do
+            table.insert(results, processSpin(player, crateType))
+        end
+        BatchCrateResults:FireClient(player, crateType, results)
+    end
 end)
 
--- ── Coin crate purchase ───────────────────────────────────────────────────────
-local function buyCoinCrate(player)
+-- ── Service Methods ──────────────────────────────────────────────────────────
+local GachaService = {}
+
+function GachaService.BuyCoinCrate(player)
+    local cost = Config.COIN_CRATE_COST or 500
 	local coins = DataManager.GetCoins(player)
-	if coins < COIN_CRATE_COST then
-		print("[GACHA] " .. player.Name .. " can't afford coin crate.")
-		return false
+    
+	if coins >= cost then
+		DataManager.AddCoins(player, -cost)
+		GachaService.AddCrate(player, "CoinDesignerCrate", 1)
+		return true
 	end
-	DataManager.AddCoins(player, -COIN_CRATE_COST)
-
-	local data = DataManager.GetData(player)
-	if data then
-		if not data.Inventory then data.Inventory = {} end
-		data.Inventory.CoinDesignerCrate = (data.Inventory.CoinDesignerCrate or 0) + 1
-	end
-
-	print("[GACHA] " .. player.Name .. " purchased a CoinDesignerCrate.")
-	return true
+	return false
 end
 
--- ── Register ──────────────────────────────────────────────────────────────────
-local GachaService = {
-	BuyCoinCrate = buyCoinCrate,
-	GetPity      = getPity,
-	AddCrate     = function(player, crateType, amount)
-		local data = DataManager.GetData(player)
-		if not data then return end
-		if not data.Inventory then data.Inventory = {} end
-		data.Inventory[crateType] = (data.Inventory[crateType] or 0) + (amount or 1)
-	end,
-}
+function GachaService.AddCrate(player, crateType, amount)
+    local data = DataManager.GetData(player)
+    if data then
+        if not data.Inventory then data.Inventory = {} end
+        data.Inventory[crateType] = (data.Inventory[crateType] or 0) + (amount or 1)
+    end
+end
 
 ServiceRegistry.Register("GachaService", GachaService)
 return GachaService
