@@ -56,10 +56,10 @@ local Replicas = {}
 
 -- Direct math for instant level calculation
 local function GetLevelFromXP(totalXP)
-    if totalXP <= 0 then return 1 end
-    -- If XP = Base * Level ^ Mult, then Level = (XP / Base) ^ (1/Mult)
-    local calculatedLevel = math.floor((totalXP / Config.BASE_XP) ^ (1 / Config.XP_MULTIPLIER))
-    return math.max(1, calculatedLevel + 1)
+	if totalXP <= 0 then return 1 end
+	-- If XP = Base * Level ^ Mult, then Level = (XP / Base) ^ (1/Mult)
+	local calculatedLevel = math.floor((totalXP / Config.BASE_XP) ^ (1 / Config.XP_MULTIPLIER))
+	return math.max(1, calculatedLevel + 1)
 end
 
 local DataManager = {}
@@ -84,13 +84,13 @@ function DataManager.AddReward(player, xp, coins, skipPopup)
 	profile.Data.Coins = math.max(0, profile.Data.Coins + finalCoins)
 	profile.Data.XP += finalXP
 
-    -- Efficient Level Check
-    local newLevel = GetLevelFromXP(profile.Data.XP)
-    if newLevel > profile.Data.Level then
-        profile.Data.Level = newLevel
-        player:SetAttribute("Level", newLevel)
-        print("[LEVEL] " .. player.Name .. " reached level " .. newLevel)
-    end
+	-- Efficient Level Check
+	local newLevel = GetLevelFromXP(profile.Data.XP)
+	if newLevel > profile.Data.Level then
+		profile.Data.Level = newLevel
+		player:SetAttribute("Level", newLevel)
+		print("[LEVEL] " .. player.Name .. " reached level " .. newLevel)
+	end
 
 	replica:SetValue({"Coins"}, profile.Data.Coins)
 	replica:SetValue({"XP"}, profile.Data.XP)
@@ -185,15 +185,24 @@ local function PlayerAdded(player)
 				end
 				data.LastLogin = now
 
-				if data.LoginStreak <= 6 then
-					local reward = 200 * data.LoginStreak
-					DataManager.AddCoins(player, reward)
-					ShowRewardPopup:FireClient(player, "", "Day " .. data.LoginStreak .. " Login: +" .. reward .. " Coins!")
-				elseif data.LoginStreak == 7 then
-					local Gacha = ServiceRegistry.Get("GachaService")
-					if Gacha then Gacha.AddCrate(player, "CoinDesignerCrate", 1) end
-					ShowRewardPopup:FireClient(player, "7 DAY STREAK!", "Free Coin Crate Rewarded!")
-					data.LoginStreak = 0 
+				-- Refactored Login Streak to use SharedConfig tiers
+				local rewardTier = Config.LOGIN_REWARDS[data.LoginStreak]
+				if rewardTier then
+					if rewardTier.Type == "Coins" then
+						DataManager.AddCoins(player, rewardTier.Amount)
+						ShowRewardPopup:FireClient(player, "", "Day " .. data.LoginStreak .. ": +" .. rewardTier.Amount .. " Coins!")
+					elseif rewardTier.Type == "Crate" then
+						local Gacha = ServiceRegistry.Get("GachaService")
+						if Gacha then 
+							Gacha.AddCrate(player, rewardTier.CrateType, rewardTier.Amount) 
+						end
+						ShowRewardPopup:FireClient(player, "STREAK REWARD!", "Free " .. rewardTier.CrateType .. " Received!")
+					end
+
+					-- Optional: Reset streak after the final day in your config
+					if data.LoginStreak >= #Config.LOGIN_REWARDS then
+						data.LoginStreak = 0
+					end
 				end
 
 				replica:SetValue({"LoginStreak"}, data.LoginStreak)
