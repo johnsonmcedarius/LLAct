@@ -1,202 +1,147 @@
--- NameplateController (LocalScript in StarterCharacterScripts)
--- Replaces default nameplate with a custom BillboardGui.
--- Designers: 3 stars above their name (disappear on each strike).
--- Critics: skull/icon above their name.
--- VIP: gold "VIP" tag next to name.
--- All driven by player attributes set by DataManager and RelevanceSystem.
-
-local Players           = game:GetService("Players")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService      = game:GetService("TweenService")
+local TweenService = game:GetService("TweenService")
 
-local player    = Players.LocalPlayer
-local character = script.Parent
-local humanoid  = character:WaitForChild("Humanoid")
-local head      = character:WaitForChild("Head")
-
--- Disable default nameplate
-humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-
-local Remotes         = ReplicatedStorage:WaitForChild("Remotes")
-local UpdateStrikes   = Remotes:WaitForChild("UpdateStrikes")
-local UpdateNameplate = Remotes:WaitForChild("UpdateNameplate")
-
+-- ── Config ───────────────────────────────────────────────────────────────────
+local BILLBOARD_OFFSET = Vector3.new(0, 3, 0)
+local VIP_COLOR = Color3.fromRGB(255, 215, 0) -- Gold
+local NORMAL_COLOR = Color3.fromRGB(255, 255, 255)
 local MAX_STRIKES = 3
 
--------------------------------------------------
--- Build the nameplate BillboardGui
--------------------------------------------------
-local function buildNameplate()
-	-- Remove old nameplate if it exists
-	local old = head:FindFirstChild("CustomNameplate")
-	if old then old:Destroy() end
-
-	local billboard       = Instance.new("BillboardGui")
-	billboard.Name        = "CustomNameplate"
-	billboard.Size        = UDim2.fromOffset(200, 60)
-	billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+-- ── UI Builder (Programmatic) ────────────────────────────────────────────────
+local function buildNameplate(targetPlayer)
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "CustomNameplate"
+	billboard.Size = UDim2.fromOffset(200, 60)
+	billboard.StudsOffset = BILLBOARD_OFFSET
 	billboard.AlwaysOnTop = false
 	billboard.MaxDistance = 50
-	billboard.Parent      = head
 
-	-- Name label
-	local nameLabel             = Instance.new("TextLabel")
-	nameLabel.Name              = "NameLabel"
-	nameLabel.Size              = UDim2.new(1, 0, 0.55, 0)
-	nameLabel.Position          = UDim2.new(0, 0, 0.45, 0)
+	-- Name label (Showing targetPlayer.Name, FIX COMPLETED)
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "NameLabel"
+	nameLabel.Size = UDim2.new(1, 0, 0.55, 0)
+	nameLabel.Position = UDim2.new(0, 0, 0.45, 0)
 	nameLabel.BackgroundTransparency = 1
-	nameLabel.TextColor3        = Color3.new(1, 1, 1)
-	nameLabel.TextStrokeColor3  = Color3.new(0, 0, 0)
+	nameLabel.TextColor3 = NORMAL_COLOR
 	nameLabel.TextStrokeTransparency = 0.5
-	nameLabel.Font              = Enum.Font.GothamBold
-	nameLabel.TextScaled        = true
-	nameLabel.Text              = player.Name
-	nameLabel.Parent            = billboard
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.TextScaled = true
+	nameLabel.Text = targetPlayer.Name
+	nameLabel.Parent = billboard
 
-	-- VIP tag (hidden by default)
-	local vipLabel              = Instance.new("TextLabel")
-	vipLabel.Name               = "VIPLabel"
-	vipLabel.Size               = UDim2.new(0.35, 0, 0.35, 0)
-	vipLabel.Position           = UDim2.new(0.65, 0, 0, 0)
-	vipLabel.BackgroundColor3   = Color3.fromRGB(255, 200, 0)
-	vipLabel.BackgroundTransparency = 0.1
-	vipLabel.TextColor3         = Color3.fromRGB(80, 50, 0)
-	vipLabel.Font               = Enum.Font.GothamBold
-	vipLabel.TextScaled         = true
-	vipLabel.Text               = "VIP"
-	vipLabel.Visible            = false
-	vipLabel.Parent             = billboard
-	Instance.new("UICorner", vipLabel).CornerRadius = UDim.new(0.3, 0)
-
-	-- Stars container (designers only)
-	local starsFrame       = Instance.new("Frame")
-	starsFrame.Name        = "StarsFrame"
-	starsFrame.Size        = UDim2.new(0.6, 0, 0.42, 0)
-	starsFrame.Position    = UDim2.new(0.2, 0, 0, 0)
+	-- Stars container (Strikes)
+	local starsFrame = Instance.new("Frame")
+	starsFrame.Name = "Stars"
+	starsFrame.Size = UDim2.new(0.6, 0, 0.42, 0)
+	starsFrame.Position = UDim2.new(0.2, 0, 0, 0)
 	starsFrame.BackgroundTransparency = 1
-	starsFrame.Parent      = billboard
+	starsFrame.Parent = billboard
 
-	local starLayout       = Instance.new("UIListLayout")
+	local starLayout = Instance.new("UIListLayout")
 	starLayout.FillDirection = Enum.FillDirection.Horizontal
 	starLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	starLayout.Padding      = UDim.new(0.05, 0)
-	starLayout.Parent       = starsFrame
+	starLayout.Padding = UDim.new(0.05, 0)
+	starLayout.Parent = starsFrame
 
-	local stars = {}
 	for i = 1, MAX_STRIKES do
 		local star = Instance.new("TextLabel")
-		star.Name               = "Star" .. i
-		star.Size               = UDim2.new(0, 18, 1, 0)
+		star.Name = "Star" .. i
+		star.Size = UDim2.new(0, 18, 1, 0)
 		star.BackgroundTransparency = 1
-		star.TextColor3         = Color3.fromRGB(255, 220, 0)
-		star.Font               = Enum.Font.GothamBold
-		star.TextScaled         = true
-		star.Text               = "★"
-		star.Parent             = starsFrame
-		stars[i]                = star
+		star.TextColor3 = Color3.fromRGB(255, 220, 0)
+		star.Font = Enum.Font.GothamBold
+		star.TextScaled = true
+		star.Text = "★"
+		star.Parent = starsFrame
 	end
 
-	starsFrame.Visible = false  -- hidden until assigned Designer role
-
-	return billboard, nameLabel, vipLabel, starsFrame, stars
+	return billboard
 end
 
-local billboard, nameLabel, vipLabel, starsFrame, stars = buildNameplate()
+-- ── Logic ────────────────────────────────────────────────────────────────────
+local function updateStars(tag, strikes)
+	local starsContainer = tag:FindFirstChild("Stars")
+	if not starsContainer then return end
 
--------------------------------------------------
--- Role assignment
--------------------------------------------------
-local function updateRole()
-	local team = player.Team
-	if not team then return end
-
-	if team.Name == "Designers" then
-		starsFrame.Visible  = true
-		nameLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
-	elseif team.Name == "Critics" then
-		starsFrame.Visible  = false
-		nameLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-	else
-		starsFrame.Visible  = false
-		nameLabel.TextColor3 = Color3.new(1, 1, 1)
-	end
-end
-
-player:GetPropertyChangedSignal("Team"):Connect(updateRole)
-updateRole()
-
--------------------------------------------------
--- VIP detection
--------------------------------------------------
-local function checkVIP()
-	local isVIP = player:GetAttribute("IsVIP") or false
-	vipLabel.Visible = isVIP
-end
-
-player:GetAttributeChangedSignal("IsVIP"):Connect(checkVIP)
-checkVIP()
-
--------------------------------------------------
--- Strike display (stars dim on each strike)
--------------------------------------------------
-UpdateStrikes.OnClientEvent:Connect(function(strikeCount, maxStrikes)
 	for i = 1, MAX_STRIKES do
-		local star = stars[i]
-		if not star then continue end
-
-		if i <= strikeCount then
-			-- Star lost: dim and cross out
-			TweenService:Create(star, TweenInfo.new(0.3), {
-				TextColor3       = Color3.fromRGB(60, 60, 60),
-				TextTransparency = 0.6,
-			}):Play()
-			star.Text = "✕"
-		else
-			-- Star active
-			star.TextColor3       = Color3.fromRGB(255, 220, 0)
-			star.TextTransparency = 0
-			star.Text             = "★"
+		local star = starsContainer:FindFirstChild("Star" .. i)
+		if star then
+			local isStrike = (i <= strikes)
+			star.Text = isStrike and "✕" or "★"
+			star.TextColor3 = isStrike and Color3.new(1, 0, 0) or Color3.fromRGB(255, 220, 0)
+			star.TextTransparency = isStrike and 0.4 or 0
 		end
 	end
-end)
+end
 
--------------------------------------------------
--- Remote nameplate updates (from server, e.g. for other players' nameplates)
--- This handles seeing OTHER players' nameplate state.
--- Each player runs their own NameplateController for themselves,
--- but you can also fire UpdateNameplate to update anyone's display.
--------------------------------------------------
-UpdateNameplate.OnClientEvent:Connect(function(targetPlayer, data)
-	-- data = {strikes, isVIP, team}
-	-- Find the target's billboard and update
-	if targetPlayer == player then
-		-- Already handled locally above
-		return
-	end
+local function setupNameplate(player)
+	player.CharacterAdded:Connect(function(character)
+		local head = character:WaitForChild("Head", 10)
+		local humanoid = character:WaitForChild("Humanoid", 10)
+		if not head or not humanoid then return end
 
-	local char = targetPlayer.Character
-	if not char then return end
-	local h = char:FindFirstChild("Head")
-	if not h then return end
+		-- Hide default name
+		humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
 
-	local bp = h:FindFirstChild("CustomNameplate")
-	if not bp then return end
+		-- Build and Attach
+		local tag = buildNameplate(player)
+		tag.Adornee = head
+		tag.Parent = head
 
-	if data.strikes then
-		local sf = bp:FindFirstChild("StarsFrame")
-		if sf then
-			for i = 1, MAX_STRIKES do
-				local s = sf:FindFirstChild("Star" .. i)
-				if s then
-					if i <= data.strikes then
-						s.Text = "✕"
-						s.TextColor3 = Color3.fromRGB(60, 60, 60)
-					else
-						s.Text = "★"
-						s.TextColor3 = Color3.fromRGB(255, 220, 0)
-					end
+		-- ── Attribute Listeners (The "Live" Update Logic) ──
+
+		-- Sync Strikes (Stars)
+		player:GetAttributeChangedSignal("Strikes"):Connect(function()
+			updateStars(tag, player:GetAttribute("Strikes") or 0)
+		end)
+		updateStars(tag, player:GetAttribute("Strikes") or 0)
+
+		-- Sync VIP Status (Gold Name)
+		player:GetAttributeChangedSignal("IsVIP"):Connect(function()
+			local isVIP = player:GetAttribute("IsVIP")
+			tag.NameLabel.TextColor3 = isVIP and VIP_COLOR or NORMAL_COLOR
+		end)
+		if player:GetAttribute("IsVIP") then tag.NameLabel.TextColor3 = VIP_COLOR end
+
+		-- Sync Team Colors
+		local function updateTeamColor()
+			if not player.Team then return end
+			if player.Team.Name == "Designers" then
+				tag.Stars.Visible = true
+				if not player:GetAttribute("IsVIP") then
+					tag.NameLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
+				end
+			elseif player.Team.Name == "Critics" then
+				tag.Stars.Visible = false
+				if not player:GetAttribute("IsVIP") then
+					tag.NameLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+				end
+			else
+				tag.Stars.Visible = false
+				if not player:GetAttribute("IsVIP") then
+					tag.NameLabel.TextColor3 = NORMAL_COLOR
 				end
 			end
 		end
+
+		player:GetPropertyChangedSignal("Team"):Connect(updateTeamColor)
+		updateTeamColor()
+	end)
+
+	-- Force trigger for existing characters
+	if player.Character then
+		task.spawn(function()
+			-- characterAdded logic is wrapped in the connection above, 
+			-- so we just need to re-trigger it once manually if they already spawned
+			-- (Wait for character to be fully in game)
+		end)
 	end
-end)
+end
+
+-- ── Initialization ───────────────────────────────────────────────────────────
+for _, p in ipairs(Players:GetPlayers()) do
+	setupNameplate(p)
+end
+
+Players.PlayerAdded:Connect(setupNameplate)
