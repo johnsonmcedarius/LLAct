@@ -22,6 +22,7 @@ local Podiums       = Assets:WaitForChild("Podiums")
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 local SpawnPodiumVFX    = Remotes:WaitForChild("SpawnPodiumVFX")
 local DespawnPodiumVFX  = Remotes:WaitForChild("DespawnPodiumVFX")
+local FreezeEvent       = Remotes:WaitForChild("FreezeEvent")
 
 local frozenPlayers = {}
 
@@ -213,18 +214,11 @@ task.spawn(function()
 					data.TimerLabel.Text = data.TimeLeft .. "s"
 				end
 
-				-- // THE CANCELLATION TRIGGER // --
 				if data.TimeLeft <= 0 then
 					print("[TAG] " .. data.Player.Name .. " was not rescued. CANCELLED.")
-
-					-- 1. Stop the race condition: Clean up the entry FIRST
 					local playerToEliminate = data.Player
 					frozenPlayers[userId] = nil 
-
-					-- 2. Immediate Elimination (Handles Lobby Swap & Character Reload)
 					Relevance.Eliminate(playerToEliminate)
-
-					-- 3. Cleanup Visuals (Podium, etc.)
 					if data.Podium then data.Podium:Destroy() end
 					if data.Countdown then data.Countdown:Destroy() end
 				end
@@ -257,19 +251,29 @@ RoundEvents.Intermission.Event:Connect(function()
 	end
 end)
 
-Remotes:WaitForChild("FreezeEvent").OnServerEvent:Connect(function(critic, hitCharacter)
-	if not (critic.Team and critic.Team.Name == "Critics") then return end
-	local target = Players:GetPlayerFromCharacter(hitCharacter)
-	if not target or frozenPlayers[target.UserId] then return end
+-- UPDATED: Hardened Security Freeze Trigger
+FreezeEvent.OnServerEvent:Connect(function(player, targetChar)
+	-- 1. TEAM CHECK: Only Critics can freeze
+	if not (player.Team and player.Team.Name == "Critics") then return end
 
-	local cRoot = critic.Character and critic.Character:FindFirstChild("HumanoidRootPart")
-	local tRoot = hitCharacter:FindFirstChild("HumanoidRootPart")
-	if not cRoot or not tRoot then return end
+	-- 2. NIL CHECK
+	if not targetChar or not targetChar:FindFirstChild("HumanoidRootPart") then return end
+	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if not root then return end
 
-	if (cRoot.Position - tRoot.Position).Magnitude <= 12 then
-		TagManager.CheckDunkDenied(critic, tRoot)
-		freezePlayer(target, critic)
+	-- 3. DISTANCE CHECK (Hardened Security)
+	local dist = (root.Position - targetChar.HumanoidRootPart.Position).Magnitude
+	if dist > (Config.MAX_INTERACTION_DISTANCE + 5) then 
+		warn("[SECURITY] " .. player.Name .. " attempted to freeze from " .. dist .. " studs!")
+		return 
 	end
+
+	-- 4. LOGIC
+	local targetPlayer = Players:GetPlayerFromCharacter(targetChar)
+	if not targetPlayer or frozenPlayers[targetPlayer.UserId] then return end
+
+	TagManager.CheckDunkDenied(player, targetChar.HumanoidRootPart)
+	freezePlayer(targetPlayer, player)
 end)
 
 ServiceRegistry.Register("TagManager", TagManager)
