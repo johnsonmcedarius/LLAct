@@ -9,6 +9,24 @@ local SharedConfig = {
 	ROBUX_PRODUCT_ID = 0, -- Set your Dev Product ID here
 	PITY_THRESHOLD = 10,
 
+	-- Gacha Weights
+	RARITY_WEIGHTS = { 
+		Common = 60, 
+		Rare = 25, 
+		Epic = 10, 
+		Legendary = 4, 
+		Mythic = 1 
+	},
+
+	-- Duplicate Compensation (Coins)
+	DUPLICATE_REWARDS = {
+		Common = 50,
+		Rare = 150,
+		Epic = 500,
+		Legendary = 2000,
+		Mythic = 10000
+	},
+
 	-- Gameplay Constants
 	MAX_CHARGE = 100,
 	CANCELLATION_TIME = 30,
