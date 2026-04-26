@@ -132,6 +132,10 @@ local function setupFabricRack(rack)
 	cp.MaxActivationDistance = 8
 	cp.Parent = rack
 
+	-- Tag prompts for team-based visibility
+	CollectionService:AddTag(dp, "DesignerPrompt")
+	CollectionService:AddTag(cp, "CriticPrompt")
+
 	-- DESIGNER COLLECTION
 	dp.Triggered:Connect(function(player)
 		if not (player.Team and player.Team.Name == GameSettings.DesignerTeamName) then return end
