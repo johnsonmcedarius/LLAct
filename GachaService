@@ -5,8 +5,6 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
 local DataManager = ServiceRegistry.Await("DataManager")
 local Config = require(ReplicatedStorage:WaitForChild("SharedConfig"))
-
--- FIXED PATH: Looking directly in ReplicatedStorage as requested
 local LootTable = require(ReplicatedStorage:WaitForChild("LootTable"))
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
@@ -18,74 +16,81 @@ local GlobalAnnouncement = Remotes:WaitForChild("GlobalAnnouncement")
 local RateLimits = {}
 local SPIN_COOLDOWN = 1.5 
 
--- ── Pool Caching ──
+-- ── Optimized Weight Caching (Prefix Sums) ──
 local PoolCaches = {}
 
 local function rebuildPoolCache(crateType)
 	local pool = LootTable[crateType]
 	if not pool then return end
 
-	local normal = {}
-	local guaranteed = {}
+	local cache = {
+		Normal = { items = {}, totalWeight = 0 },
+		Pity = { items = {}, totalWeight = 0 }
+	}
 
 	for _, item in ipairs(pool) do
 		local weight = Config.RARITY_WEIGHTS[item.Rarity] or 1
-		-- Normal weight distribution
-		for _ = 1, weight do table.insert(normal, item) end
-		-- Pity weight (Legendary/Mythic only)
+
+		-- Normal Pool logic
+		cache.Normal.totalWeight += weight
+		table.insert(cache.Normal.items, { item = item, threshold = cache.Normal.totalWeight })
+
+		-- Pity Pool logic (Legendary/Mythic Only)
 		if item.Rarity == "Legendary" or item.Rarity == "Mythic" then
-			for _ = 1, weight do table.insert(guaranteed, item) end
+			cache.Pity.totalWeight += weight
+			table.insert(cache.Pity.items, { item = item, threshold = cache.Pity.totalWeight })
 		end
 	end
 
-	PoolCaches[crateType] = { Normal = normal, Pity = guaranteed }
+	PoolCaches[crateType] = cache
 end
 
--- Pre-cache everything from the LootTable module
-for crateName in pairs(LootTable) do
-	rebuildPoolCache(crateName)
-end
-
--- ── Pity Helpers ──
-local function getPity(player, crateType)
-	local data = DataManager.GetData(player)
-	return (data and data.PityCounter and data.PityCounter[crateType]) or 0
-end
-
-local function setPity(player, crateType, value)
-	local data = DataManager.GetData(player)
-	if data then
-		if not data.PityCounter then data.PityCounter = {} end
-		data.PityCounter[crateType] = value
-	end
-end
+for crateName in pairs(LootTable) do rebuildPoolCache(crateName) end
 
 -- ── Logic ──
+
 local function pickItem(crateType, guaranteeLegendary)
-	local cache = PoolCaches[crateType]
-	if not cache then return nil end
+	local poolData = PoolCaches[crateType]
+	if not poolData then return nil end
 
-	local pool = guaranteeLegendary and cache.Pity or cache.Normal
-	if #pool == 0 then pool = cache.Normal end
+	local targetPool = (guaranteeLegendary and poolData.Pity.totalWeight > 0) and poolData.Pity or poolData.Normal
+	local roll = math.random() * targetPool.totalWeight
 
-	return pool[math.random(#pool)]
+	-- Binary Search: O(log n) speed so the server doesn't choke
+	local low, high = 1, #targetPool.items
+	while low <= high do
+		local mid = math.floor((low + high) / 2)
+		if targetPool.items[mid].threshold >= roll then
+			if mid == 1 or targetPool.items[mid - 1].threshold < roll then
+				return targetPool.items[mid].item
+			end
+			high = mid - 1
+		else
+			low = mid + 1
+		end
+	end
+	return targetPool.items[#targetPool.items].item
 end
 
 local function processSpin(player, crateType)
-	local pity      = getPity(player, crateType)
+	local data = DataManager.GetData(player)
+	if not data then return nil end
+
+	local pity = (data.PityCounter and data.PityCounter[crateType]) or 0
 	local guarantee = pity >= Config.PITY_THRESHOLD
-	local item      = pickItem(crateType, guarantee)
+	local item = pickItem(crateType, guarantee)
 
 	if not item then return nil end
 
-	-- Reset pity on high-tier pulls
+	-- Update Pity
+	if not data.PityCounter then data.PityCounter = {} end
 	if item.Rarity == "Legendary" or item.Rarity == "Mythic" then
-		setPity(player, crateType, 0)
+		data.PityCounter[crateType] = 0
 	else
-		setPity(player, crateType, pity + 1)
+		data.PityCounter[crateType] = pity + 1
 	end
 
-	-- Duplicate/Reward Logic
+	-- Inventory Logic
 	local isDuplicate = DataManager.HasItem(player, item.Category, item.Name)
 	local compensation = 0
 
@@ -96,7 +101,7 @@ local function processSpin(player, crateType)
 		DataManager.GiveItem(player, item.Category, item.Name)
 	end
 
-	-- Global Flex for Mythics
+	-- Mythic Flexing
 	if item.Rarity == "Mythic" and not isDuplicate then
 		GlobalAnnouncement:FireAllClients(player.Name .. " just pulled a MYTHIC: " .. item.Name .. "!")
 	end
@@ -110,7 +115,7 @@ local function processSpin(player, crateType)
 	}
 end
 
--- ── Remote Listeners ──
+-- ── Listeners ──
 
 Remotes:WaitForChild("OpenCrate").OnServerEvent:Connect(function(player, crateType)
 	local now = os.clock()
@@ -121,9 +126,7 @@ Remotes:WaitForChild("OpenCrate").OnServerEvent:Connect(function(player, crateTy
 	if data and data.Inventory and (data.Inventory[crateType] or 0) > 0 then
 		data.Inventory[crateType] -= 1
 		local result = processSpin(player, crateType)
-		if result then
-			CrateResult:FireClient(player, crateType, result)
-		end
+		if result then CrateResult:FireClient(player, crateType, result) end
 	end
 end)
 
