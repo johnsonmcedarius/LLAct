@@ -18,7 +18,7 @@ local UpdateAbilitySlots = getRemote("UpdateAbilitySlots")
 local PurchaseAbility    = getRemote("PurchaseAbility")
 local EquipAbility       = getRemote("EquipAbility")
 
-!
+
 local PRICES = { 
 	Common    = 500, 
 	Rare      = 1200, 
