@@ -5,9 +5,12 @@ local ServerScriptService = game:GetService("ServerScriptService")
 -- 1. LOAD THE REGISTRY FIRST
 require(ServerScriptService:WaitForChild("ServiceRegistry"))
 
--- 2. WAKE UP DATAMANAGER (This is what you're missing!)
--- This triggers the code inside your DataManager ModuleScript to actually run.
+-- 2. WAKE UP CORE SERVICES
+
 print("[SERVER] Starting DataManager...")
 require(ServerScriptService:WaitForChild("DataManager"))
+
+print("[SERVER] Starting SkinEffectService...")
+require(ServerScriptService:WaitForChild("SkinEffectService")) 
 
 print("[SERVER] All systems green. Let's get this runway started.")
