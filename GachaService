@@ -11,17 +11,33 @@ local CrateResult = Remotes:WaitForChild("CrateResult")
 local BatchCrateResults = Remotes:WaitForChild("BatchCrateResults")
 local GlobalAnnouncement = Remotes:WaitForChild("GlobalAnnouncement")
 
--- ── Loot Tables ──────────────────────────────────────────────────────────────
-local RARITY_WEIGHTS = { Common = 60, Rare = 25, Epic = 10, Legendary = 4, Mythic = 1 }
+-- ── Pre-calculated Weighted Tables (Optimization) ───────────────────────────
+local function rebuildPoolCache(pool)
+	local normal = {}
+	local guaranteed = {}
 
+	for _, item in ipairs(pool) do
+		local weight = Config.RARITY_WEIGHTS[item.Rarity] or 1
+		-- Normal weight
+		for _ = 1, weight do table.insert(normal, item) end
+		-- Pity weight (Only Legendary/Mythic)
+		if item.Rarity == "Legendary" or item.Rarity == "Mythic" then
+			for _ = 1, weight do table.insert(guaranteed, item) end
+		end
+	end
+
+	return normal, guaranteed
+end
+
+-- ── Loot Tables ──────────────────────────────────────────────────────────────
 local CoinCratePool = {
 	{Name = "Lava Flow",        Category = Config.CATEGORIES.SKIN_EFFECTS, Rarity = "Legendary"},
 	{Name = "Ice Shimmer",      Category = Config.CATEGORIES.SKIN_EFFECTS, Rarity = "Epic"},
 	{Name = "Static Glitch",    Category = Config.CATEGORIES.SKIN_EFFECTS, Rarity = "Common"},
 	{Name = "Golden Scissors",  Category = Config.CATEGORIES.WEAPON_SKINS, Rarity = "Legendary"},
-	{Name = "Chrome Basic Scissors",      Category = Config.CATEGORIES.WEAPON_SKINS, Rarity = "Rare"},
+	{Name = "Chrome Basic Scissors", Category = Config.CATEGORIES.WEAPON_SKINS, Rarity = "Rare"},
 	{Name = "Fashion Pulse",    Category = Config.CATEGORIES.SHOWSTOPPERS, Rarity = "Mythic"},
-    {Name = "Neon Snippers",    Category = Config.CATEGORIES.WEAPON_SKINS, Rarity = "Common"},
+	{Name = "Neon Snippers",    Category = Config.CATEGORIES.WEAPON_SKINS, Rarity = "Common"},
 }
 
 local RobuxCratePool = {
@@ -30,8 +46,12 @@ local RobuxCratePool = {
 	{Name = "Galaxy Skin",      Category = Config.CATEGORIES.SKIN_EFFECTS, Rarity = "Legendary"},
 	{Name = "Runway Finale",    Category = Config.CATEGORIES.SHOWSTOPPERS, Rarity = "Legendary"},
 	{Name = "Vogue Strut",      Category = Config.CATEGORIES.EMOTES,       Rarity = "Epic"},
-    {Name = "Memphis Designer", Category = Config.CATEGORIES.SKINS,        Rarity = "Epic"},
+	{Name = "Memphis Designer", Category = Config.CATEGORIES.SKINS,        Rarity = "Epic"},
 }
+
+-- Initialize caches
+local coinNormal, coinPity = rebuildPoolCache(CoinCratePool)
+local robuxNormal, robuxPity = rebuildPoolCache(RobuxCratePool)
 
 -- ── Pity Helpers ─────────────────────────────────────────────────────────────
 local function getPity(player, crateType)
@@ -48,29 +68,26 @@ local function setPity(player, crateType, value)
 end
 
 -- ── Logic ────────────────────────────────────────────────────────────────────
-local function pickItem(pool, guaranteeLegendary)
-	local weighted = {}
-	for _, item in ipairs(pool) do
-		local weight = RARITY_WEIGHTS[item.Rarity] or 1
-		if guaranteeLegendary then
-			if item.Rarity == "Legendary" or item.Rarity == "Mythic" then
-				for _ = 1, weight do table.insert(weighted, item) end
-			end
-		else
-			for _ = 1, weight do table.insert(weighted, item) end
-		end
+local function pickItem(crateType, guaranteeLegendary)
+	local pool
+	if crateType == "CoinDesignerCrate" then
+		pool = guaranteeLegendary and coinPity or coinNormal
+	else
+		pool = guaranteeLegendary and robuxPity or robuxNormal
 	end
-    
-    -- Safety fallback if pity roll pool is empty
-    if #weighted == 0 then return pool[1] end
-	return weighted[math.random(#weighted)]
+
+	if #pool == 0 then 
+		warn("[GachaService] CRITICAL: Pool for " .. crateType .. " (Guaranteed: " .. tostring(guaranteeLegendary) .. ") is empty!")
+		return (crateType == "CoinDesignerCrate") and CoinCratePool[1] or RobuxCratePool[1]
+	end
+
+	return pool[math.random(#pool)]
 end
 
 local function processSpin(player, crateType)
-	local pool      = (crateType == "CoinDesignerCrate") and CoinCratePool or RobuxCratePool
 	local pity      = getPity(player, crateType)
 	local guarantee = pity >= Config.PITY_THRESHOLD
-	local item      = pickItem(pool, guarantee)
+	local item      = pickItem(crateType, guarantee)
 
 	if item.Rarity == "Legendary" or item.Rarity == "Mythic" then
 		setPity(player, crateType, 0)
@@ -78,18 +95,33 @@ local function processSpin(player, crateType)
 		setPity(player, crateType, pity + 1)
 	end
 
-	DataManager.GiveItem(player, item.Category, item.Name)
+	-- DUPLICATE LOGIC
+	local isDuplicate = DataManager.HasItem(player, item.Category, item.Name)
+	local compensation = 0
 
-	if item.Rarity == "Mythic" then
+	if isDuplicate then
+		compensation = Config.DUPLICATE_REWARDS[item.Rarity] or 50
+		DataManager.AddCoins(player, compensation)
+	else
+		DataManager.GiveItem(player, item.Category, item.Name)
+	end
+
+	-- Only announce to everyone if it's a fresh Mythic pull
+	if item.Rarity == "Mythic" and not isDuplicate then
 		GlobalAnnouncement:FireAllClients(player.Name .. " just pulled a MYTHIC: " .. item.Name .. "!")
 	end
 
-	return { Name = item.Name, Category = item.Category, Rarity = item.Rarity }
+	return { 
+		Name = item.Name, 
+		Category = item.Category, 
+		Rarity = item.Rarity, 
+		IsDuplicate = isDuplicate, 
+		Compensation = compensation 
+	}
 end
 
 -- ── Remote Listeners ─────────────────────────────────────────────────────────
 
--- Single Open
 Remotes:WaitForChild("OpenCrate").OnServerEvent:Connect(function(player, crateType)
 	local data = DataManager.GetData(player)
 	if data and data.Inventory and (data.Inventory[crateType] or 0) > 0 then
@@ -99,28 +131,27 @@ Remotes:WaitForChild("OpenCrate").OnServerEvent:Connect(function(player, crateTy
 	end
 end)
 
--- Batch Open (Up to 10)
 Remotes:WaitForChild("BatchOpenCrate").OnServerEvent:Connect(function(player, crateType, count)
-    local count = math.clamp(math.floor(count or 1), 1, 10)
-    local data = DataManager.GetData(player)
-    
-    if data and data.Inventory and (data.Inventory[crateType] or 0) >= count then
-        data.Inventory[crateType] -= count
-        local results = {}
-        for i = 1, count do
-            table.insert(results, processSpin(player, crateType))
-        end
-        BatchCrateResults:FireClient(player, crateType, results)
-    end
+	local count = math.clamp(math.floor(count or 1), 1, 10)
+	local data = DataManager.GetData(player)
+
+	if data and data.Inventory and (data.Inventory[crateType] or 0) >= count then
+		data.Inventory[crateType] -= count
+		local results = {}
+		for i = 1, count do
+			table.insert(results, processSpin(player, crateType))
+		end
+		BatchCrateResults:FireClient(player, crateType, results)
+	end
 end)
 
 -- ── Service Methods ──────────────────────────────────────────────────────────
 local GachaService = {}
 
 function GachaService.BuyCoinCrate(player)
-    local cost = Config.COIN_CRATE_COST or 500
+	local cost = Config.COIN_CRATE_COST or 500
 	local coins = DataManager.GetCoins(player)
-    
+
 	if coins >= cost then
 		DataManager.AddCoins(player, -cost)
 		GachaService.AddCrate(player, "CoinDesignerCrate", 1)
@@ -130,11 +161,11 @@ function GachaService.BuyCoinCrate(player)
 end
 
 function GachaService.AddCrate(player, crateType, amount)
-    local data = DataManager.GetData(player)
-    if data then
-        if not data.Inventory then data.Inventory = {} end
-        data.Inventory[crateType] = (data.Inventory[crateType] or 0) + (amount or 1)
-    end
+	local data = DataManager.GetData(player)
+	if data then
+		if not data.Inventory then data.Inventory = {} end
+		data.Inventory[crateType] = (data.Inventory[crateType] or 0) + (amount or 1)
+	end
 end
 
 ServiceRegistry.Register("GachaService", GachaService)
