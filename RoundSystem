@@ -18,89 +18,114 @@ local RelevanceSystem = ServiceRegistry.Await("RelevanceSystem")
 local MIN_PLAYERS = 2
 local ROUND_DURATION = 300 
 
+-- State Tracking
+local roundWinner = nil
+local roundActive = false
+
+-- ── Win Condition Logic ──
+local function CheckWinCondition()
+	if not roundActive then return end
+
+	local designersTeam = Teams:FindFirstChild("Designers")
+	local aliveDesigners = designersTeam and #designersTeam:GetPlayers() or 0
+	local allFrozen = ReplicatedStorage:GetAttribute("AllDesignersFrozen")
+
+	-- 1. Critics Win: Everyone is frozen or the team is empty
+	if allFrozen or aliveDesigners == 0 then
+		roundWinner = "Critics"
+		roundActive = false
+		return
+	end
+
+	-- 2. Draw: Not enough players to keep the vibe going
+	if #Players:GetPlayers() < MIN_PLAYERS then
+		roundWinner = "Draw"
+		roundActive = false
+		return
+	end
+end
+
+-- Event Listeners (Connect once, stays active)
+ReplicatedStorage:GetAttributeChangedSignal("AllDesignersFrozen"):Connect(CheckWinCondition)
+Teams.ChildAdded:Connect(CheckWinCondition) -- Safety for team swaps
+Teams.ChildRemoved:Connect(CheckWinCondition)
+Players.PlayerRemoving:Connect(CheckWinCondition)
+
+-- ── The Main Game Loop ──
 local function StartRoundLoop()
 	while true do
-		-- 1. Reset state for the new round
+		-- Reset state for the new cycle
+		roundWinner = nil
+		roundActive = false
 		ReplicatedStorage:SetAttribute("AllDesignersFrozen", false)
 		TeamService.ResetTeams()
 		MapService.Cleanup()
-		
+
+		-- Wait for enough players
 		while #Players:GetPlayers() < MIN_PLAYERS do
 			TimerService.SetStatus("Waiting for Players...")
 			task.wait(2)
 		end
-		
-		-- 2. Intermission
+
+		-- Intermission
 		RoundEvents.FireIntermission()
 		TimerService.StartCountdown(10, "Intermission")
 		task.wait(10) 
-		
-		-- 3. Map Selection & Team Assignment
+
+		-- Setup phase
 		TimerService.SetStatus("Selecting Map...")
 		local map = MapService.SelectAndLoadMap()
-		local critics, designers = TeamService.AssignTeams() -- Dynamic counts via TeamService
-		
-		-- 4. Intro Sequence
+		local critics, designers = TeamService.AssignTeams()
+
 		RoundEvents.FireRoundStarted({ Critics = critics, Designers = designers })
 		task.wait(5)
-		
-		-- 5. Spawning
+
+		-- Spawn 'em in
 		MapService.TeleportPlayers(designers, MapService.GetSpawns(map, "DesignerSpawn"))
 		MapService.TeleportPlayers(critics, MapService.GetSpawns(map, "CriticSpawn"))
-		
-		local roundWinner = nil
-		local roundOver = false
-		
-		-- 6. Main Game Clock: If it finishes, Designers win by default
+
+		-- GO LIVE
+		roundActive = true
 		TimerService.StartCountdown(ROUND_DURATION, "The Show is Live!", function()
-			if not roundOver then
+			-- Timer expired callback: Designers held out!
+			if roundActive then
 				roundWinner = "Designers"
-				roundOver = true
+				roundActive = false
 			end
 		end)
-		
-		-- ── Main Win Condition Check ──
-		-- Polling at 0.5s for instant win detection
-		while not roundOver do
-			local designersTeam = Teams:FindFirstChild("Designers")
-			local aliveDesigners = designersTeam and #designersTeam:GetPlayers() or 0
-			local allFrozen = ReplicatedStorage:GetAttribute("AllDesignersFrozen")
-			
-			-- CRITICAL WIN: Only if everyone is caught/frozen
-			if allFrozen or aliveDesigners == 0 then
-				roundWinner = "Critics"
-				roundOver = true
-			elseif #Players:GetPlayers() < MIN_PLAYERS then
-				roundWinner = "Draw"
-				roundOver = true
-			end
-			task.wait(0.5)
-		end
-		
+
+		-- Yield the loop until an event or timer sets roundActive to false
+		repeat task.wait(0.1) until not roundActive
+
 		TimerService.Stop()
-		
-		-- // THE CANCELLATION TRIGGER // --
+
+		-- Post-Round Logic
 		if roundWinner == "Critics" then
 			print("[ROUND] Critics won. Initiating mass cancellation...")
 			RelevanceSystem.CancelAllDesigners() 
 		end
-		
-		-- Updated dynamic status messages
-		local winStatus = (roundWinner == "Critics") and "CRITICS SHUT IT DOWN!" or "THE COLLECTION IS A HIT!"
+
+		-- Dynamic UI Status
+		local winStatus = "NO CONTEST"
+		if roundWinner == "Critics" then
+			winStatus = "CRITICS SHUT IT DOWN!"
+		elseif roundWinner == "Designers" then
+			winStatus = "THE COLLECTION IS A HIT!"
+		end
+
 		TimerService.SetStatus(winStatus)
-		
-		-- 7. Victory Data Gathering
-		local victoryData = {
+
+		-- Send out rewards/recap data
+		RoundEvents.FireRoundEnded({
 			WinnerTeam = roundWinner,
 			Critics = critics,
 			TopDesigners = RewardTracker.GetTopPerformers(3)
-		}
-		
-		RoundEvents.FireRoundEnded(victoryData)
-		
-		-- Wait for Victory UI/Recap
+		})
+
+		-- Victory/Defeat screen cooldown
 		task.wait(15) 
 	end
 end
 
+-- Kick it off
 task.spawn(StartRoundLoop)
