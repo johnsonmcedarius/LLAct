@@ -1,5 +1,5 @@
-local Players              = game:GetService("Players")
-local UIS                  = game:GetService("UserInputService")
+local Players             = game:GetService("Players")
+local UIS                 = game:GetService("UserInputService")
 local RunService           = game:GetService("RunService")
 local TweenService         = game:GetService("TweenService")
 local ContextActionService = game:GetService("ContextActionService")
@@ -8,27 +8,23 @@ local ReplicatedStorage    = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
+-- Modules
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
 local Config       = require(ReplicatedStorage:WaitForChild("SharedConfig"))
 local VFXModule    = require(ReplicatedStorage:WaitForChild("VFXModule"))
 
--- Remotes & Networking
+-- Remotes
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-local MovementEffect = Remotes:FindFirstChild("MovementEffect") or Instance.new("RemoteEvent")
-if not MovementEffect.Parent then 
-	MovementEffect.Name = "MovementEffect"
-	MovementEffect.Parent = Remotes 
-end
+local MovementEffect = Remotes:WaitForChild("MovementEffect")
 
--- Local Constants
+-- ── Settings ─────────────────────────────────────────────────────────────────
 local DASH_DURATION = 0.22
 local NORMAL_FOV    = 70
 local SPRINT_FOV    = 80
 local DASH_FOV      = 95
 
--- Animation IDs
 local SPRINT_ANIM_ID = "rbxassetid://130150958024919"
-local JUMP_ANIM_ID   = "rbxassetid://123456789" -- Updated ID from your snippet!
+local JUMP_ANIM_ID   = "rbxassetid://123456789" 
 local DASH_ANIMS = {
 	Forward  = "rbxassetid://117382622603922",
 	Backward = "rbxassetid://126640575736027",
@@ -36,7 +32,7 @@ local DASH_ANIMS = {
 	Right    = "rbxassetid://129377801326400",
 }
 
--- State
+-- ── State ────────────────────────────────────────────────────────────────────
 local sprinting         = false
 local dashing           = false
 local dashCooldownUntil = 0
@@ -44,33 +40,39 @@ local character, humanoid, root
 local sprintTrack, jumpTrack
 local dashTracks = {}
 
--------------------------------------------------
--- Character Setup
--------------------------------------------------
+-- ── Character Setup (Fixed Logic) ──────────────────────────────────────────
 local function setupCharacter(char)
 	character = char
 	humanoid  = char:WaitForChild("Humanoid")
 	root      = char:WaitForChild("HumanoidRootPart")
 
-	local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
+	local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator")
+	if not animator.Parent then animator.Parent = humanoid end
 
-	-- Load Animations
-	sprintTrack = animator:LoadAnimation(Instance.new("Animation", {AnimationId = SPRINT_ANIM_ID}))
-	jumpTrack   = animator:LoadAnimation(Instance.new("Animation", {AnimationId = JUMP_ANIM_ID}))
-
-	for name, id in pairs(DASH_ANIMS) do
-		dashTracks[name] = animator:LoadAnimation(Instance.new("Animation", {AnimationId = id}))
+	-- Helper to create and load animations correctly
+	local function loadAnim(id)
+		local anim = Instance.new("Animation")
+		anim.AnimationId = id
+		return animator:LoadAnimation(anim)
 	end
 
-	-- Stats from Config
+	-- Load Animations
+	sprintTrack = loadAnim(SPRINT_ANIM_ID)
+	jumpTrack   = loadAnim(JUMP_ANIM_ID)
+
+	for name, id in pairs(DASH_ANIMS) do
+		dashTracks[name] = loadAnim(id)
+	end
+
+	-- Apply Stats
 	humanoid.JumpPower = Config.JUMP_POWER or 50
 	humanoid.WalkSpeed = Config.WALK_SPEED or 16
 
-	-- Jump VFX/SFX Connection
+	-- Jump Signal
 	humanoid.Jumping:Connect(function()
 		SoundService.PlayLocal("FashionJump")
-		VFXModule.Play("JumpBurst", root.Position) -- Local Feedback
-		MovementEffect:FireServer("Jump")         -- Server Replication
+		VFXModule.Play("JumpBurst", root.Position)
+		MovementEffect:FireServer("Jump")
 		if jumpTrack then jumpTrack:Play() end
 	end)
 end
@@ -78,9 +80,7 @@ end
 player.CharacterAdded:Connect(setupCharacter)
 if player.Character then setupCharacter(player.Character) end
 
--------------------------------------------------
--- Dash Logic
--------------------------------------------------
+-- ── The "Fashion Dash" Logic ────────────────────────────────────────────────
 local function getDashDirection()
 	local move = humanoid.MoveDirection
 	if move.Magnitude == 0 then return "Forward", root.CFrame.LookVector end
@@ -99,26 +99,24 @@ end
 local function performDash()
 	if not humanoid or dashing or os.clock() < dashCooldownUntil then return end
 
-	-- SECURITY: DESIGNER ONLY CHECK
+	-- Security: Only Designers get the speed boost vibes
 	if not (player.Team and player.Team.Name == "Designers") then return end
 
 	dashing = true
 	dashCooldownUntil = os.clock() + (Config.DASH_COOLDOWN or 0.5)
 
 	local dirName, dashVector = getDashDirection()
-
-	-- Play Dash Animation
 	local track = dashTracks[dirName]
-	if track then track:Play(0.1) end
 
-	-- Play Dash SFX & VFX
+	-- Play Feedback
+	if track then track:Play(0.1) end
 	SoundService.PlayLocal("FashionDash") 
-	VFXModule.Play("DashRainbow", root.Position) -- Local Feedback
-	MovementEffect:FireServer("Dash")           -- Server Replication
+	VFXModule.Play("DashRainbow", root.Position)
+	MovementEffect:FireServer("Dash") 
 
 	-- Physics
+	local att = Instance.new("Attachment", root)
 	local dashVel = Instance.new("LinearVelocity")
-	local att     = Instance.new("Attachment", root)
 	dashVel.MaxForce = 100000
 	dashVel.VectorVelocity = dashVector.Unit * (Config.DASH_SPEED or 90)
 	dashVel.Attachment0 = att
@@ -128,17 +126,17 @@ local function performDash()
 
 	task.wait(DASH_DURATION)
 
+	-- Cleanup
 	if track then track:Stop(0.2) end
 	dashVel:Destroy()
 	att:Destroy()
 
-	TweenService:Create(camera, TweenInfo.new(0.3), {FieldOfView = sprinting and SPRINT_FOV or NORMAL_FOV}):Play()
+	local targetFOV = sprinting and SPRINT_FOV or NORMAL_FOV
+	TweenService:Create(camera, TweenInfo.new(0.3), {FieldOfView = targetFOV}):Play()
 	dashing = false
 end
 
--------------------------------------------------
--- Input Listeners
--------------------------------------------------
+-- ── Inputs & Render Loop ─────────────────────────────────────────────────────
 UIS.InputBegan:Connect(function(input, gp)
 	if gp then return end
 	if input.KeyCode == Enum.KeyCode.Q then performDash() end
@@ -149,22 +147,24 @@ UIS.InputEnded:Connect(function(input)
 	if input.KeyCode == Enum.KeyCode.LeftShift then sprinting = false end
 end)
 
--- Controller Support
 ContextActionService:BindAction("FashionDash", function(_, state)
 	if state == Enum.UserInputState.Begin then performDash() end
 end, true, Enum.KeyCode.ButtonR1)
 
--------------------------------------------------
--- Movement Loop
--------------------------------------------------
 RunService.RenderStepped:Connect(function()
 	if not humanoid or dashing then return end
 
 	if sprinting and humanoid.MoveDirection.Magnitude > 0 then
 		humanoid.WalkSpeed = Config.SPRINT_SPEED or 24
-		if sprintTrack and not sprintTrack.IsPlaying then sprintTrack:Play() end
+		if sprintTrack and not sprintTrack.IsPlaying then 
+			sprintTrack:Play() 
+			TweenService:Create(camera, TweenInfo.new(0.3), {FieldOfView = SPRINT_FOV}):Play()
+		end
 	else
 		humanoid.WalkSpeed = Config.WALK_SPEED or 16
-		if sprintTrack and sprintTrack.IsPlaying then sprintTrack:Stop() end
+		if sprintTrack and sprintTrack.IsPlaying then 
+			sprintTrack:Stop() 
+			TweenService:Create(camera, TweenInfo.new(0.3), {FieldOfView = NORMAL_FOV}):Play()
+		end
 	end
 end)
