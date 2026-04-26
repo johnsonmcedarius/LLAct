@@ -3,18 +3,35 @@ local SharedConfig = {
 	DATA_VERSION = "v1.7",
 	BASE_XP = 100,
 	XP_MULTIPLIER = 1.3,
-	
+
 	-- Gacha & Economics
 	COIN_CRATE_COST = 500,
 	ROBUX_PRODUCT_ID = 0, -- Set your Dev Product ID here
 	PITY_THRESHOLD = 10,
-	
+
 	-- Gameplay Constants
+	MAX_CHARGE = 100,
 	CANCELLATION_TIME = 30,
 	ANTI_CAMP_DISTANCE = 15,
 	DUNK_DENIED_RANGE = 5,
 	SABOTAGE_COOLDOWN = 30,
-	
+
+	-- Showstopper Charge Amounts
+	CHARGES = {
+		-- Designer Events
+		FabricDunk = 25,
+		FabricPass = 10,
+		TeamRescue = 15,
+		AbilityHit = 5,
+		CloseDodge = 3,
+
+		-- Critic Events
+		FreezeDesigner = 20,
+		FinalCancel = 40,
+		InterceptPass = 15,
+		DunkDenied = 20,
+	},
+
 	-- Categories
 	CATEGORIES = {
 		SKINS = "Skins",
