@@ -1,0 +1,27 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local VFX = require(ServerScriptService:WaitForChild("VFXModule")) -- Stays in ServerScriptService
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+-- Create the remote if it doesn't exist
+local MovementEffect = Remotes:FindFirstChild("MovementEffect")
+if not MovementEffect then
+	MovementEffect = Instance.new("RemoteEvent")
+	MovementEffect.Name = "MovementEffect"
+	MovementEffect.Parent = Remotes
+end
+
+MovementEffect.OnServerEvent:Connect(function(player, effectType)
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	if effectType == "Dash" then
+		VFX.Play("DashRainbow", root.Position) -- Uses your VFXModule API
+	elseif effectType == "Jump" then
+		VFX.Play("JumpBurst", root.Position)
+	end
+end)
+
+return {}
