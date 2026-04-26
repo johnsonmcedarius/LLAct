@@ -1,41 +1,293 @@
--- RoundEvents (ModuleScript in ReplicatedStorage or ServerScriptService)
--- Single source of truth for round lifecycle signals.
--- ALL scripts listen here instead of string-matching StatusText.Value.
--- This eliminates every brittle "if val:find('Win')" check.
+--teleportPlayers uses ALL SpawnParts tagged "DesignerSpawn" "CriticSpawn")
 
-local RoundEvents = {}
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local Players             = game:GetService("Players")
+local Workspace           = game:GetService("Workspace")
+local Teams               = game:GetService("Teams")
+local CollectionService   = game:GetService("CollectionService")
+local ServerScriptService = game:GetService("ServerScriptService")
 
--- BindableEvents — server-to-server only
-local function makeEvent(name)
-	local e = Instance.new("BindableEvent")
-	e.Name = name
-	return e
+-- ── Modules ──────────────────────────────────────────────────────────────────
+local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
+
+-- ── StatusValues (still used for HUD display text) ───────────────────────────
+local StatusValues = ReplicatedStorage:WaitForChild("StatusValues")
+local StatusText   = StatusValues:WaitForChild("StatusText")
+local TimerValue   = StatusValues:WaitForChild("Timer")
+
+local MapsFolder    = ReplicatedStorage:WaitForChild("Maps")
+local LobbyTeam     = Teams:WaitForChild("Lobby")
+local DesignersTeam = Teams:WaitForChild("Designers")
+local CriticsTeam   = Teams:WaitForChild("Critics")
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local function getRemote(name)
+	local r = Remotes:FindFirstChild(name)
+	if not r then r = Instance.new("RemoteEvent", Remotes) r.Name = name end
+	return r
 end
 
--- Fired when a round transitions to active (teams assigned, spawns done)
--- Payload: none
-RoundEvents.RoundStarted = makeEvent("RoundStarted")
+local ShowMVP     = getRemote("ShowMVP")
+local ShowEndStats = getRemote("ShowEndStats")
 
--- Fired when a round ends with a clear winner
--- Payload: winningTeamName (string)  e.g. "Designers" or "Critics"
-RoundEvents.RoundEnded = makeEvent("RoundEnded")
+-- ── Settings ─────────────────────────────────────────────────────────────────
+local INTERMISSION_TIME = 10
+local ROUND_TIME        = 300
+local MIN_PLAYERS       = 2
 
--- Fired during intermission / map cleanup phase
--- Payload: none
-RoundEvents.Intermission = makeEvent("Intermission")
+local currentMapModel = nil
+local lobbySpawn      = Workspace:FindFirstChild("LobbySpawn")
 
--- Convenience wrappers used by RoundSystem only
-function RoundEvents.FireRoundStarted()
-	RoundEvents.RoundStarted:Fire()
+-- ── Helpers ───────────────────────────────────────────────────────────────────
+local function formatTime(seconds)
+	return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
 end
 
-function RoundEvents.FireRoundEnded(winningTeamName)
-	assert(type(winningTeamName) == "string", "[RoundEvents] winningTeamName must be a string")
-	RoundEvents.RoundEnded:Fire(winningTeamName)
+local function resetTeams()
+	for _, p in pairs(Players:GetPlayers()) do
+		p.Team = LobbyTeam
+	end
 end
 
-function RoundEvents.FireIntermission()
-	RoundEvents.Intermission:Fire()
+-- ── Spawn-part helpers ────────────────────────────────────────────────────────
+-- Returns a list of CFrames from all BaseParts tagged with `tag` inside `model`.
+-- Falls back to a single fallback CFrame if none are found.
+local function getSpawnCFrames(model, tag, fallbackCFrame)
+	local parts = {}
+
+	-- Prefer CollectionService tags ("DesignerSpawn" / "CriticSpawn") inside the map
+	for _, part in ipairs(CollectionService:GetTagged(tag)) do
+		if part:IsDescendantOf(model) and part:IsA("BasePart") then
+			table.insert(parts, part.CFrame)
+		end
+	end
+
+	-- If the map has no tagged parts, try conventional named children
+	if #parts == 0 then
+		local named = model:FindFirstChild(tag == "DesignerSpawn" and "Spawn" or "CriticSpawn")
+		if named then
+			if named:IsA("BasePart") then
+				table.insert(parts, named.CFrame)
+			else
+				for _, child in ipairs(named:GetChildren()) do
+					if child:IsA("BasePart") then
+						table.insert(parts, child.CFrame)
+					end
+				end
+			end
+		end
+	end
+
+	if #parts == 0 and fallbackCFrame then
+		table.insert(parts, fallbackCFrame)
+	end
+
+	return parts
 end
 
-return RoundEvents
+-- Distributes `playerList` across the given CFrame list.
+-- Players are offset in a tight grid so they never overlap.
+local function spawnPlayers(playerList, spawnCFrames)
+	if #spawnCFrames == 0 then
+		warn("[ROUND] No spawn CFrames available — players not teleported.")
+		return
+	end
+
+	-- Grid offset so multiple players at the same spawn don't stack
+	local GRID_SPACING = 4  -- studs between players sharing a spawn point
+	local usageCounts  = {}  -- how many players assigned to each spawn index
+
+	for i, player in ipairs(playerList) do
+		local spawnIdx = ((i - 1) % #spawnCFrames) + 1
+		local cf       = spawnCFrames[spawnIdx]
+
+		usageCounts[spawnIdx] = (usageCounts[spawnIdx] or 0) + 1
+		local slot = usageCounts[spawnIdx]
+
+		-- Arrange slots in a grid: row = ceil(slot/3), col = (slot-1)%3
+		local col = (slot - 1) % 3
+		local row = math.floor((slot - 1) / 3)
+		local offset = Vector3.new(col * GRID_SPACING, 0, row * GRID_SPACING)
+		-- Centre the grid around the spawn point
+		local centreOffset = Vector3.new(-(GRID_SPACING), 0, -(GRID_SPACING))
+
+		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			player.Character:PivotTo(cf + offset + centreOffset + Vector3.new(0, 3, 0))
+		end
+	end
+end
+
+-- ── MVP podium teleport ───────────────────────────────────────────────────────
+local function teleportMVPToLobbyPodium(mvpPlayer)
+	local mvpPodium = Workspace:FindFirstChild("MVPPodium", true)
+	if not mvpPodium then
+		warn("[MVP] MVPPodium model not found in Workspace.")
+		return
+	end
+
+	local attachment = mvpPodium:FindFirstChild("MVPPodiumAttachment", true)
+	if not attachment then
+		warn("[MVP] MVPPodiumAttachment not found inside MVPPodium.")
+		return
+	end
+
+	if mvpPlayer.Character and mvpPlayer.Character:FindFirstChild("HumanoidRootPart") then
+		mvpPlayer.Character:PivotTo(attachment.WorldCFrame)
+		print("[MVP] " .. mvpPlayer.Name .. " teleported to MVP podium.")
+	end
+end
+
+-- ── Main round loop ───────────────────────────────────────────────────────────
+while true do
+	ReplicatedStorage:SetAttribute("AllDesignersFrozen", false)
+
+	resetTeams()
+	if currentMapModel then
+		currentMapModel:Destroy()
+		currentMapModel = nil
+	end
+
+	-- ── Intermission / wait for players ──────────────────────────────────────
+	RoundEvents.FireIntermission()
+
+	while #Players:GetPlayers() < MIN_PLAYERS do
+		StatusText.Value = "Waiting for players... (Need " .. MIN_PLAYERS .. "+)"
+		TimerValue.Value = 0
+		task.wait(1)
+	end
+
+	for i = INTERMISSION_TIME, 0, -1 do
+		StatusText.Value = "Intermission"
+		TimerValue.Value = i
+		task.wait(1)
+	end
+
+	-- ── Map selection ─────────────────────────────────────────────────────────
+	StatusText.Value = "Selecting Map..."
+	task.wait(1)
+
+	local maps = MapsFolder:GetChildren()
+	if #maps == 0 then
+		warn("[ROUND] No maps found in ReplicatedStorage.Maps!")
+		task.wait(3)
+		continue
+	end
+
+	local map = maps[math.random(#maps)]
+	currentMapModel = map:Clone()
+	currentMapModel.Parent = Workspace
+
+	-- Find spawn CFrames for each team
+	local designerSpawnPart = currentMapModel:FindFirstChild("Spawn")
+	local fallbackCF = designerSpawnPart and designerSpawnPart.CFrame or CFrame.new(0, 5, 0)
+
+	local designerCFrames = getSpawnCFrames(currentMapModel, "DesignerSpawn", fallbackCF)
+	local criticCFrames   = getSpawnCFrames(currentMapModel, "CriticSpawn",   fallbackCF)
+
+	-- ── Team assignment ───────────────────────────────────────────────────────
+	local all        = Players:GetPlayers()
+	local numCritics = #all >= 4 and 2 or 1
+
+	-- Fisher-Yates shuffle
+	for i = #all, 2, -1 do
+		local j = math.random(i)
+		all[i], all[j] = all[j], all[i]
+	end
+
+	local criticNames = {}
+	for i = 1, numCritics do
+		all[i].Team = CriticsTeam
+		table.insert(criticNames, all[i].Name)
+	end
+	for i = numCritics + 1, #all do
+		all[i].Team = DesignersTeam
+	end
+
+	if #criticNames == 1 then
+		StatusText.Value = criticNames[1] .. " is the Critic!"
+	else
+		StatusText.Value = criticNames[1] .. " AND " .. criticNames[2] .. " are the Critics!"
+	end
+
+	task.wait(2.5)
+	StatusText.Value = "Game Starting..."
+	task.wait(1)
+
+	-- ── Spawn players to their team-specific spawn areas ─────────────────────
+	pcall(function()
+		spawnPlayers(DesignersTeam:GetPlayers(), designerCFrames)
+		spawnPlayers(CriticsTeam:GetPlayers(),   criticCFrames)
+	end)
+
+	-- ── Fire RoundStarted — all services listen to this ──────────────────────
+	RoundEvents.FireRoundStarted()
+
+	-- ── Round timer ───────────────────────────────────────────────────────────
+	local roundWinner = nil
+
+	for i = ROUND_TIME, 0, -1 do
+		local dCount    = #DesignersTeam:GetPlayers()
+		local cCount    = #CriticsTeam:GetPlayers()
+		local allFrozen = ReplicatedStorage:GetAttribute("AllDesignersFrozen")
+
+		if allFrozen then
+			StatusText.Value = "Critics Win! The runway is shut down."
+			roundWinner = "Critics"
+			break
+		elseif dCount == 0 then
+			StatusText.Value = "Critics Win! No designers left."
+			roundWinner = "Critics"
+			break
+		elseif cCount == 0 then
+			StatusText.Value = "Designers Win! Critics left."
+			roundWinner = "Designers"
+			break
+		elseif #Players:GetPlayers() < MIN_PLAYERS then
+			StatusText.Value = "Not enough players!"
+			break
+		end
+
+		if i == 0 then
+			StatusText.Value = "The Collection is a Hit!"
+			roundWinner = "Designers"
+		else
+			StatusText.Value = "Round  " .. formatTime(i)
+		end
+
+		TimerValue.Value = i
+		task.wait(1)
+	end
+
+	-- ── Fire RoundEnded — triggers RewardTracker, etc. ───────────────────────
+	if roundWinner then
+		RoundEvents.FireRoundEnded(roundWinner)
+	end
+
+	-- Allow RewardTracker to process rewards and fire ShowMVP
+	task.wait(4)
+
+	-- MVP camera + end stats window
+	task.wait(15)
+
+	-- ── Cleanup ───────────────────────────────────────────────────────────────
+	task.wait(1)
+	StatusText.Value = "Round Over!"
+	print("[SYSTEM] Round ended. Cleaning up.")
+
+	for _, p in pairs(Players:GetPlayers()) do
+		local toolInChar = p.Character and p.Character:FindFirstChild("FBRoll")
+		if toolInChar then toolInChar:Destroy() end
+		local toolInBp = p.Backpack:FindFirstChild("FBRoll")
+		if toolInBp then toolInBp:Destroy() end
+		p:LoadCharacter()
+	end
+
+	if lobbySpawn then
+		spawnPlayers(Players:GetPlayers(), {lobbySpawn.CFrame})
+	else
+		warn("[ROUND] LobbySpawn missing!")
+	end
+
+	task.wait(2)
+end
