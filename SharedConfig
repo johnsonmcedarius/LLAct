@@ -17,6 +17,23 @@ local SharedConfig = {
 		Legendary = 4, 
 		Mythic = 1 
 	},
+	
+	-- Movement & Gameplay
+	DASH_SPEED = 85,
+	MAX_STRIKES = 3,
+	RACK_COOLDOWN = 5,
+	MAX_INTERACTION_DISTANCE = 30,
+
+	-- Login Reward Tiers
+	LOGIN_REWARDS = {
+		[1] = {Type = "Coins", Amount = 200},
+		[2] = {Type = "Coins", Amount = 400},
+		[3] = {Type = "Coins", Amount = 600},
+		[4] = {Type = "Coins", Amount = 800},
+		[5] = {Type = "Coins", Amount = 1000},
+		[6] = {Type = "Coins", Amount = 1200},
+		[7] = {Type = "Crate", Amount = 1, CrateType = "CoinDesignerCrate"}
+	},
 
 	-- Duplicate Compensation (Coins)
 	DUPLICATE_REWARDS = {
