@@ -75,16 +75,22 @@ function ShowstopperService.AddCharge(player, amount)
 	end
 end
 
--- Event Hooks for Game Logic
+-- ── Event Hooks for Game Logic ───────────────────────────────────────────────
 ShowstopperService.OnFabricDunk     = function(p) ShowstopperService.AddCharge(p, Config.CHARGES.FabricDunk) end
 ShowstopperService.OnTeamRescue     = function(p) ShowstopperService.AddCharge(p, Config.CHARGES.TeamRescue) end
 ShowstopperService.OnAbilityHit     = function(p) ShowstopperService.AddCharge(p, Config.CHARGES.AbilityHit) end
 ShowstopperService.OnFreezeDesigner = function(p) ShowstopperService.AddCharge(p, Config.CHARGES.FreezeDesigner) end
--- (Add others as needed from your ChargeAmounts table)
+
+-- FIXED: Added the missing hook for the FabricPassSystem to stop nil crashes
+ShowstopperService.OnFabricPass = function(p1, p2) 
+	ShowstopperService.AddCharge(p1, Config.CHARGES.FabricPass) 
+	-- Reward the receiver with a small boost to encourage passing
+	if p2 then ShowstopperService.AddCharge(p2, 5) end
+end
 
 -- ── Activation Handler ───────────────────────────────────────────────────────
 ActivateShowstopper.OnServerEvent:Connect(function(player, moduleName)
-	-- 1. Ownership Check (Middleman Mode)
+	-- 1. Ownership Check
 	if not DataManager.HasItem(player, Config.CATEGORIES.SHOWSTOPPERS, moduleName) then
 		warn("[SHOWSTOPPER] " .. player.Name .. " does not own " .. tostring(moduleName))
 		return
