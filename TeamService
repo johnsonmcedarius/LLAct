@@ -1,0 +1,47 @@
+local Teams = game:GetService("Teams")
+local Players = game:GetService("Players")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+
+local TeamService = {}
+
+local DesignersTeam = Teams:WaitForChild("Designers")
+local CriticsTeam = Teams:WaitForChild("Critics")
+local LobbyTeam = Teams:WaitForChild("Lobby")
+
+function TeamService.ResetTeams()
+	for _, player in ipairs(Players:GetPlayers()) do
+		player.Team = LobbyTeam
+	end
+end
+
+function TeamService.AssignTeams()
+	local allPlayers = Players:GetPlayers()
+	if #allPlayers < 1 then return {}, {} end
+
+	-- Fisher-Yates Shuffle
+	for i = #allPlayers, 2, -1 do
+		local j = math.random(i)
+		allPlayers[i], allPlayers[j] = allPlayers[j], allPlayers[i]
+	end
+
+	local numCritics = #allPlayers >= 4 and 2 or 1
+	local critics = {}
+	local designers = {}
+
+	for i, player in ipairs(allPlayers) do
+		if i <= numCritics then
+			player.Team = CriticsTeam
+			table.insert(critics, player)
+		else
+			player.Team = DesignersTeam
+			table.insert(designers, player)
+		end
+	end
+
+	return critics, designers
+end
+
+ServiceRegistry.Register("TeamService", TeamService)
+return TeamService
