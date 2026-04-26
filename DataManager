@@ -53,8 +53,13 @@ local Profiles = {}
 local Replicas = {}
 
 -- ── Logic ────────────────────────────────────────────────────────────────────
-local function GetRequiredXP(level)
-	return math.floor(Config.BASE_XP * (level ^ Config.XP_MULTIPLIER))
+
+-- Direct math for instant level calculation
+local function GetLevelFromXP(totalXP)
+    if totalXP <= 0 then return 1 end
+    -- If XP = Base * Level ^ Mult, then Level = (XP / Base) ^ (1/Mult)
+    local calculatedLevel = math.floor((totalXP / Config.BASE_XP) ^ (1 / Config.XP_MULTIPLIER))
+    return math.max(1, calculatedLevel + 1)
 end
 
 local DataManager = {}
@@ -72,24 +77,24 @@ function DataManager.AddReward(player, xp, coins, skipPopup)
 	local finalXP = xp or 0
 	local finalCoins = coins or 0
 
+	-- Apply XP Multipliers (VIP, Gamepasses, etc.)
 	local xpMult = player:GetAttribute("XPMultiplier") or 1
 	finalXP = math.floor(finalXP * xpMult)
 
 	profile.Data.Coins = math.max(0, profile.Data.Coins + finalCoins)
 	profile.Data.XP += finalXP
 
-	local reqXP = GetRequiredXP(profile.Data.Level)
-	while profile.Data.XP >= reqXP do
-		profile.Data.XP -= reqXP
-		profile.Data.Level += 1
-		print(player.Name .. " leveled up to " .. profile.Data.Level)
-		reqXP = GetRequiredXP(profile.Data.Level)
-	end
+    -- Efficient Level Check
+    local newLevel = GetLevelFromXP(profile.Data.XP)
+    if newLevel > profile.Data.Level then
+        profile.Data.Level = newLevel
+        player:SetAttribute("Level", newLevel)
+        print("[LEVEL] " .. player.Name .. " reached level " .. newLevel)
+    end
 
 	replica:SetValue({"Coins"}, profile.Data.Coins)
 	replica:SetValue({"XP"}, profile.Data.XP)
 	replica:SetValue({"Level"}, profile.Data.Level)
-	player:SetAttribute("Level", profile.Data.Level)
 
 	if not skipPopup and (finalXP > 0 or finalCoins > 0) then
 		local xpText = finalXP > 0 and "+"..finalXP.." XP" or ""
@@ -213,17 +218,15 @@ end
 Players.PlayerAdded:Connect(PlayerAdded)
 for _, p in ipairs(Players:GetPlayers()) do task.spawn(PlayerAdded, p) end
 
--- Updated PlayerRemoving to be more aggressive
 Players.PlayerRemoving:Connect(function(player)
 	local profile = Profiles[player]
 	if profile then 
 		print("[DATA] Saving and closing session for " .. player.Name)
-		profile:EndSession() -- ProfileStore handles the final save here
+		profile:EndSession() 
 		Profiles[player] = nil
 	end
 end)
 
--- Server shutdown: force all saves
 game:BindToClose(function()
 	print("[DATA] Server shutting down, forcing saves...")
 	for _, player in ipairs(Players:GetPlayers()) do
