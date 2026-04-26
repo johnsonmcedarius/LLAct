@@ -1,13 +1,14 @@
 local CollectionService   = game:GetService("CollectionService")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local Players             = game:GetService("Players")
-local TweenService        = game:GetService("TweenService")
+local TweenService         = game:GetService("TweenService")
 local Debris              = game:GetService("Debris")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
 local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
-
+local Config          = require(ReplicatedStorage:WaitForChild("SharedConfig")) -- SHARED CONFIG
+local VFX             = require(ServerScriptService:WaitForChild("VFXModule")) -- INJECTED VFX
 
 local ShowstopperService = ServiceRegistry.Await("ShowstopperService")
 local RewardTracker      = ServiceRegistry.Await("RewardTracker")
@@ -30,9 +31,9 @@ local ShowRewardPopup      = getRemote("ShowRewardPopup")
 local DepositVFX           = getRemote("DepositVFX")
 local SabotagePing         = getRemote("SabotagePing")
 local RackStateChanged     = getRemote("RackStateChanged")
-local RackPickupVFX        = getRemote("RackPickupVFX")
 
-local MAX_INTERACTION_DISTANCE = 30
+-- ── Constants & Settings ─────────────────────────────────────────────────────
+-- Note: Ensure MAX_INTERACTION_DISTANCE is defined in your SharedConfig!
 local RACK_COOLDOWN            = 5
 local BIN_HITBOX_SIZE          = Vector3.new(10, 8, 10)
 local SABOTAGE_HOLD_DURATION   = 3.5
@@ -42,7 +43,7 @@ local TANGLE_DURATION          = 60
 local SABOTAGE_RULE_OF_TWO     = 2
 local SABOTAGE_COOLDOWN        = 30
 
-local Config = {
+local GameSettings = {
 	TotalFabricNeeded = 5,
 	ExitDoorName      = "RunwayExit",
 	CriticTeamName    = "Critics",
@@ -56,7 +57,17 @@ local criticSabotageQueue    = {}
 local criticSabotageCooldown = {}
 local tangleTimers           = {}
 
+-- ── Helpers ──────────────────────────────────────────────────────────────────
 
+-- FIXED: Nil Check Protection for distance logic
+local function isWithinRange(p1, p2)
+	if not p1 or not p2 then return false end
+	local pos1 = p1:IsA("Vector3") and p1 or p1.Position
+	local pos2 = p2:IsA("Vector3") and p2 or p2.Position
+	-- Falling back to a default of 30 if not defined in SharedConfig
+	local maxDist = Config.MAX_INTERACTION_DISTANCE or 30 
+	return (pos1 - pos2).Magnitude <= maxDist
+end
 
 local function recordSabotage(critic, rack)
 	print("[SABOTAGE] " .. critic.Name .. " tangled up a rack!")
@@ -64,13 +75,10 @@ end
 
 local function addGlobalFabric(amount)
 	globalFabricCount += amount
-	local pct = globalFabricCount / Config.TotalFabricNeeded
+	local pct = globalFabricCount / GameSettings.TotalFabricNeeded
 	UpdateFabricUI:FireAllClients(pct)
-
-	lastFiredPercentage = pct
-	print("[FABRIC] Global progress: " .. globalFabricCount .. "/" .. Config.TotalFabricNeeded)
+	print("[FABRIC] Global progress: " .. globalFabricCount .. "/" .. GameSettings.TotalFabricNeeded)
 end
-
 
 local function setRackState(rack, sabotaged)
 	local regular  = rack:FindFirstChild("RegularState")
@@ -99,7 +107,7 @@ end
 
 local function alertCritics(rack, isSabotageAlert)
 	for _, p in ipairs(Players:GetPlayers()) do
-		if p.Team and p.Team.Name == Config.CriticTeamName then
+		if p.Team and p.Team.Name == GameSettings.CriticTeamName then
 			if isSabotageAlert then
 				SabotagePing:FireClient(p, rack)
 			else
@@ -127,6 +135,8 @@ local function unsabotageRack(rack)
 	end
 end
 
+-- ── Logic ────────────────────────────────────────────────────────────────────
+
 local function setupFabricRack(rack)
 	for _, child in ipairs(rack:GetDescendants()) do
 		if child:IsA("ProximityPrompt") then child:Destroy() end
@@ -136,55 +146,52 @@ local function setupFabricRack(rack)
 	rack:SetAttribute("IsSabotaged",  false)
 	setRackState(rack, false)
 
-	-- DESIGNER PROMPT
-	local dp         = Instance.new("ProximityPrompt")
-	dp.Name          = "DesignerPickup"
-	dp.ActionText    = "Collect Fabric"
-	dp.ObjectText    = "Fabric Rack"
+	local dp = Instance.new("ProximityPrompt")
+	dp.Name = "DesignerPickup"
+	dp.ActionText = "Collect Fabric"
+	dp.ObjectText = "Fabric Rack"
 	dp.HoldDuration = NORMAL_PICKUP_HOLD
-	dp.RequiresLineOfSight   = false
+	dp.RequiresLineOfSight = false
 	dp.MaxActivationDistance = 8
-	dp.Parent         = rack
+	dp.Parent = rack
 	CollectionService:AddTag(dp, "DesignerPrompt")
 
-	-- CRITIC PROMPT
-	local cp         = Instance.new("ProximityPrompt")
-	cp.Name          = "CriticSabotage"
-	cp.ActionText    = "Sabotage Rack"
-	cp.ObjectText    = "Fabric Rack"
+	local cp = Instance.new("ProximityPrompt")
+	cp.Name = "CriticSabotage"
+	cp.ActionText = "Sabotage Rack"
+	cp.ObjectText = "Fabric Rack"
 	cp.HoldDuration = SABOTAGE_HOLD_DURATION
-	cp.RequiresLineOfSight   = false
+	cp.RequiresLineOfSight = false
 	cp.MaxActivationDistance = 8
-	cp.Parent         = rack
+	cp.Parent = rack
 	CollectionService:AddTag(cp, "CriticPrompt")
 
-	dp.Enabled = true
-	cp.Enabled = true
-
 	dp.Triggered:Connect(function(player)
-		if not (player.Team and player.Team.Name == Config.DesignerTeamName) then return end
+		if not (player.Team and player.Team.Name == GameSettings.DesignerTeamName) then return end
 		if rack:GetAttribute("IsOnCooldown") then return end
+
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		local rackBase = rack:FindFirstChildWhichIsA("BasePart") or rack.PrimaryPart
+
+		-- CRASH FIX: Explicit nil check before indexing .Position
+		if not root or not rackBase then return end
+		if not isWithinRange(root, rackBase) then 
+			warn("[EXPLOIT] " .. player.Name .. " rack grab too far.")
+			return 
+		end
 
 		local hasFabric = player.Backpack:FindFirstChild("FBRoll") or (player.Character and player.Character:FindFirstChild("FBRoll"))
 		if hasFabric then return end
 
-		local root    = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-		local rackBase = rack:IsA("BasePart") and rack or rack:FindFirstChildWhichIsA("BasePart")
-
-		if root and rackBase and (root.Position - rackBase.Position).Magnitude > MAX_INTERACTION_DISTANCE then
-			warn("[EXPLOIT] " .. player.Name .. " rack grab too far.")
-			return
-		end
-
 		local wasSabotaged = rack:GetAttribute("IsSabotaged")
-
 		local assets = ReplicatedStorage:FindFirstChild("Assets")
 		local fbAsset = assets and assets:FindFirstChild("FBRoll")
 		if fbAsset then fbAsset:Clone().Parent = player.Backpack end
 
-		local rackPos = rackBase and rackBase.Position or Vector3.zero
-		RackPickupVFX:FireAllClients(rackPos)
-		SoundService.FireToAll("FabricPickup", rackPos)
+		-- VFX INJECTION: Replaced manual logic with VFXModule
+		VFX.Play("FabricRackPickup", rackBase.Position) 
+
+		SoundService.FireToAll("FabricPickup", rackBase.Position)
 		PlayProximitySound:FireAllClients(rack, "SnipZip")
 
 		if wasSabotaged then
@@ -206,27 +213,25 @@ local function setupFabricRack(rack)
 		task.delay(RACK_COOLDOWN, function()
 			if not rack or not rack.Parent then return end
 			rack:SetAttribute("IsOnCooldown", false)
-			dp.Enabled = false
-			cp.Enabled = false
+			dp.Enabled = true
+			cp.Enabled = true
 			setRackState(rack, false)
 		end)
 	end)
 
 	cp.Triggered:Connect(function(critic)
-		if not (critic.Team and critic.Team.Name == Config.CriticTeamName) then return end
+		if not (critic.Team and critic.Team.Name == GameSettings.CriticTeamName) then return end
 		if rack:GetAttribute("IsOnCooldown") then return end
 		if rack:GetAttribute("IsSabotaged") then return end
 
-		local now        = os.clock()
+		local root = critic.Character and critic.Character:FindFirstChild("HumanoidRootPart")
+		local rackBase = rack:FindFirstChildWhichIsA("BasePart") or rack.PrimaryPart
+
+		if not root or not rackBase or not isWithinRange(root, rackBase) then return end
+
+		local now = os.clock()
 		local coolExpiry = criticSabotageCooldown[critic.UserId] or 0
 		if now < coolExpiry then return end
-
-		local criticRoot = critic.Character and critic.Character:FindFirstChild("HumanoidRootPart")
-		local rackBase   = rack:IsA("BasePart") and rack or rack:FindFirstChildWhichIsA("BasePart")
-
-		if criticRoot and rackBase and (criticRoot.Position - rackBase.Position).Magnitude > MAX_INTERACTION_DISTANCE then
-			return
-		end
 
 		criticSabotageCooldown[critic.UserId] = now + SABOTAGE_COOLDOWN
 		recordSabotage(critic, rack)
@@ -241,29 +246,21 @@ local function setupFabricRack(rack)
 		if tangleTimers[rack] then task.cancel(tangleTimers[rack]) end
 		tangleTimers[rack] = task.delay(TANGLE_DURATION, function()
 			unsabotageRack(rack)
-			print("[SABOTAGE] Tangle expired on rack.")
 		end)
 	end)
 end
 
 local function setupFabricBin(bin)
-	for _, child in ipairs(bin:GetDescendants()) do
-		if child:IsA("ProximityPrompt") then child:Destroy() end
-	end
-
-	local hitbox = bin:FindFirstChild("DepositHitbox")
-	if not hitbox then
-		hitbox              = Instance.new("Part")
-		hitbox.Name          = "DepositHitbox"
-		hitbox.Size          = BIN_HITBOX_SIZE
+	local hitbox = bin:FindFirstChild("DepositHitbox") or Instance.new("Part")
+	if not hitbox.Parent then
+		hitbox.Name = "DepositHitbox"
+		hitbox.Size = BIN_HITBOX_SIZE
 		hitbox.Transparency = 1
-		hitbox.CanCollide   = false
-		hitbox.Anchored     = true
+		hitbox.CanCollide = false
+		hitbox.Anchored = true
 		local binBase = bin:IsA("BasePart") and bin or bin:FindFirstChildWhichIsA("BasePart")
 		if binBase then hitbox.CFrame = binBase.CFrame end
 		hitbox.Parent = bin
-	else
-		hitbox.Size = BIN_HITBOX_SIZE
 	end
 
 	local depositing = {}
@@ -271,32 +268,25 @@ local function setupFabricBin(bin)
 	hitbox.Touched:Connect(function(hit)
 		local character = hit.Parent
 		local player    = Players:GetPlayerFromCharacter(character)
-		if not player then return end
-		if not (player.Team and player.Team.Name == Config.DesignerTeamName) then return end
+		if not player or not (player.Team and player.Team.Name == GameSettings.DesignerTeamName) then return end
 		if depositing[player.UserId] then return end
+
+		local root = character:FindFirstChild("HumanoidRootPart")
+		local binBase = bin:FindFirstChildWhichIsA("BasePart") or bin.PrimaryPart
+		if not root or not binBase or not isWithinRange(root, binBase) then return end
 
 		local fabricTool = character:FindFirstChild("FBRoll") or player.Backpack:FindFirstChild("FBRoll")
 		if not fabricTool then return end
 
-		local root    = character:FindFirstChild("HumanoidRootPart")
-		local binBase = bin:IsA("BasePart") and bin or bin:FindFirstChildWhichIsA("BasePart")
-		if root and binBase and (root.Position - binBase.Position).Magnitude > MAX_INTERACTION_DISTANCE then
-			warn("[EXPLOIT] " .. player.Name .. " deposit too far.")
-			return
-		end
-
 		depositing[player.UserId] = true
-		local depositPos = binBase and binBase.Position or Vector3.zero
-
 		fabricTool:Destroy()
 		addGlobalFabric(1)
 
-		SoundService.FireToAll("FabricDunk", depositPos)
-		DepositVFX:FireAllClients(depositPos)
+		SoundService.FireToAll("FabricDunk", binBase.Position)
+		VFX.Play("FabricDeposit", binBase.Position) -- Upgraded to VFXModule
 
 		ShowstopperService.OnFabricDunk(player)
 		RewardTracker.OnFabricCollect(player)
-
 		ShowRewardPopup:FireClient(player, "+25 XP", "+5 Coins")
 
 		task.delay(0.5, function() depositing[player.UserId] = nil end)
@@ -309,9 +299,7 @@ local function resetAll()
 	trendTrackerFired   = false
 	UpdateFabricUI:FireAllClients(0)
 
-	for rack, handle in pairs(tangleTimers) do
-		task.cancel(handle)
-	end
+	for rack, handle in pairs(tangleTimers) do task.cancel(handle) end
 	tangleTimers = {}
 
 	for _, rack in ipairs(CollectionService:GetTagged("FabricRacks")) do
@@ -320,15 +308,7 @@ local function resetAll()
 			rack:SetAttribute("IsSabotaged",  false)
 			setRackState(rack, false)
 			local dp = rack:FindFirstChild("DesignerPickup")
-			if dp then 
-				dp.HoldDuration = NORMAL_PICKUP_HOLD 
-				dp.ActionText = "Collect Fabric" 
-				dp.Enabled = true
-			end
-			local cp = rack:FindFirstChild("CriticSabotage")
-			if cp then cp.Enabled = true end
-			local rf = rack:FindFirstChild("RegularState")
-			if rf then for _, p in ipairs(rf:GetDescendants()) do if p:IsA("BasePart") then p.Transparency = 0 end end end
+			if dp then dp.Enabled = true dp.HoldDuration = NORMAL_PICKUP_HOLD end
 		end
 	end
 
