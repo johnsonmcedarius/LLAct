@@ -6,31 +6,32 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
 local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
 
--- Await hard dependencies
+-- Await dependencies
 local DataManager = ServiceRegistry.Await("DataManager")
 
--- DailyLookbook is optional — use Get() so we don't block if it's absent
+-- DailyLookbook is optional
 local function getDailyLookbook()
 	return ServiceRegistry.Get("DailyLookbook")
 end
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local ShowMVP         = Remotes:WaitForChild("ShowMVP")
+local ShowEndStats    = Remotes:WaitForChild("ShowEndStats")
+local PostMatchXP     = Remotes:WaitForChild("PostMatchXP")
 
-local function getRemote(name)
-	local r = Remotes:FindFirstChild(name)
-	if not r then r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes end
-	return r
-end
+-- ── Point Values (Competition Scoring) ──────────────────────────────────────
+local POINTS = {
+	FABRIC_COLLECT = 10,
+	FABRIC_DUNK    = 50,  -- The main metric for Designers
+	SABOTAGE       = 40,  -- The main metric for Critics
+	CLEAN_RUNWAY   = 100, -- Bonus for winning
+}
 
-local ShowRewardPopup = getRemote("ShowRewardPopup")
-local ShowMVP         = getRemote("ShowMVP")
-local ShowEndStats    = getRemote("ShowEndStats")
-local PostMatchXP     = getRemote("PostMatchXP")
-
--- ── Reward config ─────────────────────────────────────────────────────────────
-local Rewards = {
+-- ── Reward Config (Economy/Progression) ─────────────────────────────────────
+local REWARDS_CONFIG = {
 	DesignerWin       = {XP = 150,  Coins = 50},
 	FabricCollect     = {XP = 15,   Coins = 5},
+	FabricDunk        = {XP = 25,   Coins = 10},
 	UnfreezeAlly      = {XP = 50,   Coins = 15},
 	SurvivalPerMinute = {XP = 10,   Coins = 2},
 	CriticWin         = {XP = 200,  Coins = 75},
@@ -41,19 +42,23 @@ local Rewards = {
 	CriticMVP         = {XP = 120,  Coins = 60},
 }
 
-local roundScores    = {}
+local roundScores    = {} -- [UserId] = {stats}
 local roundActive    = false
 local pressureTimers = {}
 
+-- ── Internal Helpers ─────────────────────────────────────────────────────────
 local function initScore(player)
 	roundScores[player.UserId] = {
+		Player = player,
 		fabricCount = 0,
-		unfreezes   = 0,
-		freezes     = 0,
+		dunks = 0,
+		unfreezes = 0,
+		freezes = 0,
 		neverFrozen = true,
-		sabotages   = 0,
-		xpEarned    = 0,
+		sabotages = 0,
+		xpEarned = 0,
 		coinsEarned = 0,
+		totalPoints = 0 -- Competition points for MVP engine
 	}
 end
 
@@ -61,16 +66,12 @@ local function getScore(player)
 	return roundScores[player.UserId]
 end
 
--- // THE FIX: Calling DataManager directly but safely // --
 local function giveReward(player, rewardKey)
-	local r = Rewards[rewardKey]
+	local r = REWARDS_CONFIG[rewardKey]
 	if not r then return end
 
-	-- Directly calling the fixed DataManager as requested
 	if DataManager and DataManager.AddReward then
-		DataManager.AddReward(player, r.XP, r.Coins)
-	else
-		warn("[REWARD ERROR] DataManager.AddReward is not accessible!")
+		DataManager.AddReward(player, r.XP, r.Coins, true) -- Default to skip individual popups
 	end
 
 	local score = getScore(player)
@@ -80,15 +81,27 @@ local function giveReward(player, rewardKey)
 	end
 end
 
--- ── Global API ────────────────────────────────────────────────────────────────
+-- ── Public API ───────────────────────────────────────────────────────────────
 local RewardTracker = {}
 
 function RewardTracker.OnFabricCollect(player)
-	giveReward(player, "FabricCollect")
 	local s = getScore(player)
-	if s then s.fabricCount += 1 end
-	local lb = getDailyLookbook()
-	if lb then lb.AddProgress(player, "Dunks", 1) end
+	if s then 
+		s.fabricCount += 1 
+		s.totalPoints += POINTS.FABRIC_COLLECT
+	end
+	giveReward(player, "FabricCollect")
+end
+
+function RewardTracker.OnFabricDunk(player)
+	local s = getScore(player)
+	if s then 
+		s.dunks += 1 
+		s.totalPoints += POINTS.FABRIC_DUNK
+	end
+	giveReward(player, "FabricDunk")
+	
+	print("[REWARDS] " .. player.Name .. " dunked fabric! Total Dunks: " .. (s and s.dunks or 0))
 end
 
 function RewardTracker.OnUnfreezeAlly(player)
@@ -108,9 +121,13 @@ function RewardTracker.OnFreezeDesigner(critic)
 end
 
 function RewardTracker.OnSabotage(critic)
-	giveReward(critic, "SabotageStation")
 	local s = getScore(critic)
-	if s then s.sabotages += 1 end
+	if s then 
+		s.sabotages += 1 
+		s.totalPoints += POINTS.SABOTAGE
+	end
+	giveReward(critic, "SabotageStation")
+	
 	local lb = getDailyLookbook()
 	if lb then lb.AddProgress(critic, "Sabotages", 1) end
 end
@@ -128,7 +145,36 @@ function RewardTracker.GetScore(player)
 	return getScore(player)
 end
 
--- ── Survival passive income ───────────────────────────────────────────────────
+-- // THE "TOP 3" ENGINE // --
+function RewardTracker.GetTopPerformers(count)
+	local list = {}
+	for _, data in pairs(roundScores) do
+		if data.Player and data.Player.Parent then
+			table.insert(list, data)
+		end
+	end
+
+	-- Sort by Dunks primarily, then by competition points
+	table.sort(list, function(a, b)
+		if a.dunks ~= b.dunks then
+			return a.dunks > b.dunks
+		end
+		return a.totalPoints > b.totalPoints
+	end)
+
+	local results = {}
+	for i = 1, math.min(count, #list) do
+		table.insert(results, {
+			Player = list[i].Player,
+			Score = list[i].dunks,
+			Points = list[i].totalPoints
+		})
+	end
+	
+	return results
+end
+
+-- ── Passive Survival Rewards ──────────────────────────────────────────────────
 task.spawn(function()
 	while true do
 		task.wait(60)
@@ -143,7 +189,7 @@ task.spawn(function()
 	end
 end)
 
--- ── Apply Pressure detection ──────────────────────────────────────────────────
+-- ── Pressure Detection ──
 task.spawn(function()
 	while true do
 		task.wait(1)
@@ -193,36 +239,41 @@ local function calculateMVP()
 		if not s then continue end
 
 		if p.Team and p.Team.Name == "Designers" then
-			local score = (s.fabricCount * 3) + (s.unfreezes * 2) + (s.neverFrozen and 5 or 0)
+			local score = (s.dunks * 10) + (s.fabricCount * 2) + (s.unfreezes * 5) + (s.neverFrozen and 15 or 0)
 			if score > bestDesignerScore then bestDesignerScore = score designerMVP = p end
 		elseif p.Team and p.Team.Name == "Critics" then
-			if s.freezes > bestCriticScore then bestCriticScore = s.freezes criticMVP = p end
+			local score = (s.freezes * 10) + (s.sabotages * 5)
+			if score > bestCriticScore then bestCriticScore = score criticMVP = p end
 		end
 	end
 
 	return designerMVP, criticMVP
 end
 
--- ── Round lifecycle ──────────────────────────────────────────────────────────
+-- ── Round Lifecycle ──────────────────────────────────────────────────────────
 RoundEvents.RoundStarted.Event:Connect(function()
-	roundActive     = true
+	roundActive    = true
 	pressureTimers = {}
 	for _, p in ipairs(Players:GetPlayers()) do initScore(p) end
-	print("[REWARDS] Round started.")
+	print("[REWARDS] Round started. Stats initialized.")
 end)
 
 RoundEvents.RoundEnded.Event:Connect(function(winningTeamName)
 	if not roundActive then return end
 	roundActive = false
 
+	-- Winning Team Bonus
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p.Team then
-			local isDesignerWin = p.Team.Name == "Designers" and winningTeamName == "Designers"
-			local isCriticWin   = p.Team.Name == "Critics"   and winningTeamName == "Critics"
-			if isDesignerWin then
-				giveReward(p, "DesignerWin")
-			elseif isCriticWin then
-				giveReward(p, "CriticWin")
+			local score = getScore(p)
+			if p.Team.Name == winningTeamName then
+				if score then score.totalPoints += POINTS.CLEAN_RUNWAY end
+				
+				if winningTeamName == "Designers" then
+					giveReward(p, "DesignerWin")
+				else
+					giveReward(p, "CriticWin")
+				end
 			end
 		end
 	end
@@ -236,8 +287,7 @@ RoundEvents.RoundEnded.Event:Connect(function(winningTeamName)
 
 	if mvpPlayer then
 		giveReward(mvpPlayer, mvpKey)
-		print("[REWARDS] MVP: " .. mvpPlayer.Name .. " - " .. mvpTitle)
-
+		
 		local allStats = {}
 		for _, p in ipairs(Players:GetPlayers()) do
 			local s = getScore(p)
@@ -263,10 +313,7 @@ RoundEvents.RoundEnded.Event:Connect(function(winningTeamName)
 					myScore and myScore.coinsEarned or 0)
 
 				if data and PostMatchXP then
-					PostMatchXP:FireClient(p,
-						data.Level,
-						data.XP,
-						myScore and myScore.xpEarned or 0)
+					PostMatchXP:FireClient(p, data.Level, data.XP, myScore and myScore.xpEarned or 0)
 				end
 			end
 		end)
@@ -276,6 +323,7 @@ end)
 RoundEvents.Intermission.Event:Connect(function()
 	roundScores    = {}
 	pressureTimers = {}
+	print("[REWARDS] Stats cleared for Intermission.")
 end)
 
 Players.PlayerAdded:Connect(function(p)
@@ -287,7 +335,5 @@ Players.PlayerRemoving:Connect(function(p)
 	pressureTimers[p.UserId] = nil
 end)
 
--- Register at the very end to ensure all functions are defined
 ServiceRegistry.Register("RewardTracker", RewardTracker)
-
 return RewardTracker
