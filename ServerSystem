@@ -1,24 +1,25 @@
--- ServerSystem (Script in ServerScriptService)
-print("[SERVER] Initializing Fashion Systems...")
+print("[SERVER] Initializing...")
 
 local ServerScriptService = game:GetService("ServerScriptService")
 
--- 1. Load Registry
+-- ── 1. SERVICE REGISTRY (The Foundation) ───────────────────────────────────
+-- This has to load first or everything else breaks.
 require(ServerScriptService:WaitForChild("ServiceRegistry"))
 
--- 2. Wake up Core Services
+-- ── 2. CORE INFRASTRUCTURE ────────────────────────────────────────────────
+-- Data and backend services first.
 require(ServerScriptService:WaitForChild("DataManager"))
 require(ServerScriptService:WaitForChild("GachaService"))
 require(ServerScriptService:WaitForChild("TeamService"))
 require(ServerScriptService:WaitForChild("MapService"))
 require(ServerScriptService:WaitForChild("TimerService"))
-require(ServerScriptService:WaitForChild("VFXModule"))
 require(ServerScriptService:WaitForChild("RoundEvents"))
-require(ServerScriptService:WaitForChild("MovementVFXService"))
 
--- 3. Wake up Gameplay Logic
--- require(ServerScriptService:WaitForChild("RelevanceSystem"))
--- require(ServerScriptService:WaitForChild("RewardTracker"))
-require(ServerScriptService:WaitForChild("SkinEffectService")) 
+-- ── 3. GAMEPLAY & REWARD LOGIC ─────────────────────────────────────────────
+-- RewardTracker is REQUIRED for FabricManager to track XP/Coins.
+--require(ServerScriptService:WaitForChild("RewardTracker"))
+--require(ServerScriptService:WaitForChild("ShowstopperService")) 
+--require(ServerScriptService:WaitForChild("FabricManager"))
+require(ServerScriptService:WaitForChild("SkinEffectService"))
 
-print("[SERVER] All services initialized successfully.")
+print("[SERVER] All services initialized.")
