@@ -13,10 +13,9 @@ local Relevance       = ServiceRegistry.Await("RelevanceSystem")
 local RewardTracker   = ServiceRegistry.Await("RewardTracker")
 local ShowstopperService = ServiceRegistry.Await("ShowstopperService")
 local DataManager     = ServiceRegistry.Await("DataManager")
-local SkinEffects     = require(script.Parent:WaitForChild("SkinEffectService"))
+local SkinEffects     = require(ServerScriptService:WaitForChild("SkinEffectService"))
 
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
-
 local Assets        = ReplicatedStorage:WaitForChild("Assets")
 local Podiums       = Assets:WaitForChild("Podiums")
 
@@ -50,7 +49,10 @@ local function createCountdownBillboard(root)
 end
 
 local function checkTotalFreeze()
-	local designers = Teams:WaitForChild("Designers"):GetPlayers()
+	local designersTeam = Teams:FindFirstChild("Designers")
+	if not designersTeam then return end
+
+	local designers = designersTeam:GetPlayers()
 	local totalFrozen = 0
 	for _ in pairs(frozenPlayers) do totalFrozen += 1 end
 
@@ -59,15 +61,13 @@ local function checkTotalFreeze()
 	end
 end
 
--- ── Unfreeze ──────────────────────────────────────────────────────────────────
+-- ── Unfreeze (Rescue) ────────────────────────────────────────────────────────
 local function unfreezePlayer(targetPlayer, rescuer)
 	local data = frozenPlayers[targetPlayer.UserId]
 	if not data then return end
 
-	-- Cleanup Visuals via SkinEffectService
 	if targetPlayer.Character then
 		SkinEffects.ClearManual(targetPlayer.Character)
-		-- Re-apply their standing skin effect (if they have one equipped)
 		local standEffect = targetPlayer:GetAttribute("EquippedSkinEffect") or "None"
 		SkinEffects.ApplyManual(targetPlayer, targetPlayer.Character, standEffect)
 	end
@@ -95,7 +95,7 @@ local function unfreezePlayer(targetPlayer, rescuer)
 	ReplicatedStorage:SetAttribute("AllDesignersFrozen", false)
 end
 
--- ── Freeze ────────────────────────────────────────────────────────────────────
+-- ── Freeze (Podium Setup) ────────────────────────────────────────────────────
 local function freezePlayer(designer, critic)
 	if frozenPlayers[designer.UserId] then return end
 
@@ -118,18 +118,12 @@ local function freezePlayer(designer, critic)
 	root.Anchored = true
 	RewardTracker.OnPlayerFrozen(designer)
 
-	-- ── FASHION FREEZE VISUALS ──
 	local equippedEffect = designer:GetAttribute("EquippedSkinEffect") or "None"
-
-	-- Ownership Check
 	if not DataManager.HasItem(designer, Config.CATEGORIES.SKIN_EFFECTS, equippedEffect) then
 		equippedEffect = "None"
 	end
-
-	-- Apply the modular skin effect via Service
 	SkinEffects.ApplyManual(designer, char, equippedEffect)
 
-	-- ── PODIUM SETUP ──
 	local podiumName = designer:GetAttribute("EquippedPodium") or "BasicPodium"
 	local podiumTemplate = Podiums:FindFirstChild(podiumName) or Podiums:FindFirstChild("BasicPodium")
 	local podium = podiumTemplate:Clone()
@@ -149,7 +143,6 @@ local function freezePlayer(designer, critic)
 		root.CFrame = CFrame.new(groundPos + Vector3.new(0, 3, 0)) * CFrame.Angles(0, math.rad(root.Orientation.Y), 0)
 	end
 
-	-- ── ANIMATION & PROMPT ──
 	local poseID = designer:GetAttribute("EquippedPose") or "rbxassetid://74997474532222"
 	local animObj = Instance.new("Animation")
 	animObj.AnimationId = poseID
@@ -193,9 +186,57 @@ local function freezePlayer(designer, critic)
 	checkTotalFreeze()
 end
 
+-- ── Systems Loop ─────────────────────────────────────────────────────────────
+task.spawn(function()
+	while true do
+		task.wait(1)
+		for userId, data in pairs(frozenPlayers) do
+			local isCamped = false
+			local designerChar = data.Player.Character
+
+			local criticsTeam = Teams:FindFirstChild("Critics")
+			if criticsTeam then
+				for _, critic in ipairs(criticsTeam:GetPlayers()) do
+					local cc = critic.Character
+					if cc and designerChar and cc:FindFirstChild("HumanoidRootPart") and designerChar:FindFirstChild("HumanoidRootPart") then
+						if (cc.HumanoidRootPart.Position - designerChar.HumanoidRootPart.Position).Magnitude < Config.ANTI_CAMP_DISTANCE then
+							isCamped = true
+							break
+						end
+					end
+				end
+			end
+
+			if not isCamped then
+				data.TimeLeft -= 1
+				if data.TimerLabel and data.TimerLabel.Parent then
+					data.TimerLabel.Text = data.TimeLeft .. "s"
+				end
+
+				-- // THE CANCELLATION TRIGGER // --
+				if data.TimeLeft <= 0 then
+					print("[TAG] " .. data.Player.Name .. " was not rescued. CANCELLED.")
+
+					-- 1. Stop the race condition: Clean up the entry FIRST
+					local playerToEliminate = data.Player
+					frozenPlayers[userId] = nil 
+
+					-- 2. Immediate Elimination (Handles Lobby Swap & Character Reload)
+					Relevance.Eliminate(playerToEliminate)
+
+					-- 3. Cleanup Visuals (Podium, etc.)
+					if data.Podium then data.Podium:Destroy() end
+					if data.Countdown then data.Countdown:Destroy() end
+				end
+			end
+		end
+	end
+end)
+
 -- ── TagManager API ────────────────────────────────────────────────────────────
 local TagManager = {
 	Unfreeze = function(player) unfreezePlayer(player, nil) end,
+	CheckTotalFreeze = checkTotalFreeze,
 
 	CheckDunkDenied = function(critic, designerRoot)
 		for _, bin in ipairs(CollectionService:GetTagged("FabricBins")) do
@@ -213,37 +254,6 @@ local TagManager = {
 RoundEvents.Intermission.Event:Connect(function()
 	for _, data in pairs(frozenPlayers) do
 		if data.Player then unfreezePlayer(data.Player, nil) end
-	end
-end)
-
-task.spawn(function()
-	while true do
-		task.wait(1)
-		for _, data in pairs(frozenPlayers) do
-			local isCamped = false
-			local designerChar = data.Player.Character
-
-			for _, critic in ipairs(Teams.Critics:GetPlayers()) do
-				local cc = critic.Character
-				if cc and designerChar and cc:FindFirstChild("HumanoidRootPart") and designerChar:FindFirstChild("HumanoidRootPart") then
-					if (cc.HumanoidRootPart.Position - designerChar.HumanoidRootPart.Position).Magnitude < Config.ANTI_CAMP_DISTANCE then
-						isCamped = true
-						break
-					end
-				end
-			end
-
-			if not isCamped then
-				data.TimeLeft -= 1
-				if data.TimerLabel and data.TimerLabel.Parent then
-					data.TimerLabel.Text = data.TimeLeft .. "s"
-				end
-				if data.TimeLeft <= 0 then
-					Relevance.AddStrike(data.Player)
-					unfreezePlayer(data.Player, nil)
-				end
-			end
-		end
 	end
 end)
 
