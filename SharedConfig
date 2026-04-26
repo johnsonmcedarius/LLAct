@@ -1,0 +1,29 @@
+local SharedConfig = {
+	-- Data & XP
+	DATA_VERSION = "v1.7",
+	BASE_XP = 100,
+	XP_MULTIPLIER = 1.3,
+	
+	-- Gacha & Economics
+	COIN_CRATE_COST = 500,
+	ROBUX_PRODUCT_ID = 0, -- Set your Dev Product ID here
+	PITY_THRESHOLD = 10,
+	
+	-- Gameplay Constants
+	CANCELLATION_TIME = 30,
+	ANTI_CAMP_DISTANCE = 15,
+	DUNK_DENIED_RANGE = 5,
+	SABOTAGE_COOLDOWN = 30,
+	
+	-- Categories
+	CATEGORIES = {
+		SKINS = "Skins",
+		PODIUMS = "Podiums",
+		WEAPON_SKINS = "WeaponSkins",
+		SKIN_EFFECTS = "SkinEffects",
+		SHOWSTOPPERS = "Showstoppers",
+		EMOTES = "Emotes"
+	}
+}
+
+return SharedConfig
