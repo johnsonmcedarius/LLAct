@@ -213,9 +213,24 @@ end
 Players.PlayerAdded:Connect(PlayerAdded)
 for _, p in ipairs(Players:GetPlayers()) do task.spawn(PlayerAdded, p) end
 
+-- Updated PlayerRemoving to be more aggressive
 Players.PlayerRemoving:Connect(function(player)
-	if Profiles[player] then 
-		Profiles[player]:EndSession() 
+	local profile = Profiles[player]
+	if profile then 
+		print("[DATA] Saving and closing session for " .. player.Name)
+		profile:EndSession() -- ProfileStore handles the final save here
+		Profiles[player] = nil
+	end
+end)
+
+-- Server shutdown: force all saves
+game:BindToClose(function()
+	print("[DATA] Server shutting down, forcing saves...")
+	for _, player in ipairs(Players:GetPlayers()) do
+		local profile = Profiles[player]
+		if profile then
+			profile:EndSession()
+		end
 	end
 end)
 
