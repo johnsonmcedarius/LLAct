@@ -100,7 +100,7 @@ function RewardTracker.OnFabricDunk(player)
 		s.totalPoints += POINTS.FABRIC_DUNK
 	end
 	giveReward(player, "FabricDunk")
-	
+
 	print("[REWARDS] " .. player.Name .. " dunked fabric! Total Dunks: " .. (s and s.dunks or 0))
 end
 
@@ -127,7 +127,7 @@ function RewardTracker.OnSabotage(critic)
 		s.totalPoints += POINTS.SABOTAGE
 	end
 	giveReward(critic, "SabotageStation")
-	
+
 	local lb = getDailyLookbook()
 	if lb then lb.AddProgress(critic, "Sabotages", 1) end
 end
@@ -170,7 +170,7 @@ function RewardTracker.GetTopPerformers(count)
 			Points = list[i].totalPoints
 		})
 	end
-	
+
 	return results
 end
 
@@ -268,7 +268,7 @@ RoundEvents.RoundEnded.Event:Connect(function(winningTeamName)
 			local score = getScore(p)
 			if p.Team.Name == winningTeamName then
 				if score then score.totalPoints += POINTS.CLEAN_RUNWAY end
-				
+
 				if winningTeamName == "Designers" then
 					giveReward(p, "DesignerWin")
 				else
@@ -287,7 +287,7 @@ RoundEvents.RoundEnded.Event:Connect(function(winningTeamName)
 
 	if mvpPlayer then
 		giveReward(mvpPlayer, mvpKey)
-		
+
 		local allStats = {}
 		for _, p in ipairs(Players:GetPlayers()) do
 			local s = getScore(p)
