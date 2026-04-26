@@ -105,16 +105,9 @@ function DataManager.UpdateEquipped(player, key, value)
 	local replica = Replicas[player]
 	if not profile or not replica then return end
 
-	-- 1. Update the Profile table
 	profile.Data.Equipped[key] = value
-
-	-- 2. Update the Replica so the HUD sees it instantly
 	replica:SetValue({"Equipped", key}, value)
-
-	-- 3. Update Attributes (Great for visual systems/VFX)
 	player:SetAttribute("Equipped" .. key, value)
-
-	print("[DATA] Updated " .. player.Name .. "'s " .. key .. " to " .. tostring(value))
 end
 
 -- ── Helper Exports ──────────────────────────────────────────────────────────
@@ -173,6 +166,40 @@ local function PlayerAdded(player)
 				Replication = player
 			})
 			Replicas[player] = replica
+
+			-- ── LOGIN STREAK LOGIC ──
+			local data = profile.Data
+			local now = os.time()
+			local last = data.LastLogin or 0
+			local DAY_SECONDS = 86400
+
+			-- Check if at least 24 hours have passed
+			if (now - last) >= DAY_SECONDS then
+				-- If they logged in within 48 hours, increment streak. Otherwise, reset to 1.
+				if (now - last) <= (DAY_SECONDS * 2) then
+					data.LoginStreak = (data.LoginStreak or 0) + 1
+				else
+					data.LoginStreak = 1 
+				end
+
+				data.LastLogin = now
+
+				-- Reward Tiers
+				if data.LoginStreak <= 6 then
+					local reward = 200 * data.LoginStreak
+					DataManager.AddCoins(player, reward)
+					ShowRewardPopup:FireClient(player, "", "Day " .. data.LoginStreak .. " Login: +" .. reward .. " Coins!")
+				elseif data.LoginStreak == 7 then
+					local Gacha = ServiceRegistry.Get("GachaService")
+					if Gacha then Gacha.AddCrate(player, "CoinDesignerCrate", 1) end
+					ShowRewardPopup:FireClient(player, "7 DAY STREAK!", "Free Coin Crate Rewarded!")
+					data.LoginStreak = 0 -- Reset cycle after big prize
+				end
+
+				-- Update Replica so UI stays synced
+				replica:SetValue({"LoginStreak"}, data.LoginStreak)
+				replica:SetValue({"LastLogin"}, data.LastLogin)
+			end
 
 			-- Initial Attribute Sync
 			player:SetAttribute("Level", profile.Data.Level)
