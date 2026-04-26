@@ -1,6 +1,3 @@
--- CodesService (Script in ServerScriptService)
--- FIXED: ServiceRegistry replaces _G.DataManager and _G.GachaService
-
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
@@ -11,62 +8,83 @@ local GachaService    = ServiceRegistry.Await("GachaService")
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
+-- Helper to ensure remotes exist without crashing the script
 local function getRemote(name)
 	local r = Remotes:FindFirstChild(name)
-	if not r then r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes end
+	if not r then 
+		r = Instance.new("RemoteEvent") 
+		r.Name = name 
+		r.Parent = Remotes 
+	end
 	return r
 end
 
 local RedeemCode = getRemote("RedeemCode")
 local CodeResult = getRemote("CodeResult")
 
+-- The Code Database
 local CODES = {
 	LASTLOOK  = {Reward = "Coins",             Amount = 100, Active = true},
 	RUNWAY100 = {Reward = "Coins",             Amount = 100, Active = true},
 	VIPACCESS = {Reward = "CoinDesignerCrate", Amount = 1,   Active = true},
-	XPBOOST   = {Reward = "XP",               Amount = 200, Active = true},
+	XPBOOST   = {Reward = "XP",                Amount = 200, Active = true},
 }
 
+-- Helper to safely grab player data
 local function getRedeemedCodes(player)
 	local data = DataManager.GetData(player)
-	if not data then return {} end
+	if not data then return nil end
 	if not data.RedeemedCodes then data.RedeemedCodes = {} end
 	return data.RedeemedCodes
 end
 
 RedeemCode.OnServerEvent:Connect(function(player, code)
+	-- 1. Sanitize input
 	if type(code) ~= "string" then return end
 	code = code:upper():gsub("%s+", "")
 
 	local codeData = CODES[code]
 
+	-- 2. Basic Validation
 	if not codeData then
 		CodeResult:FireClient(player, false, "Invalid code.")
 		return
 	end
+
 	if not codeData.Active then
 		CodeResult:FireClient(player, false, "This code has expired.")
 		return
 	end
 
+	-- 3. Data Check
 	local redeemed = getRedeemedCodes(player)
+	if not redeemed then 
+		CodeResult:FireClient(player, false, "Data not loaded. Try again.")
+		return 
+	end
+
 	if redeemed[code] then
-		CodeResult:FireClient(player, false, "You've already redeemed this code.")
+		CodeResult:FireClient(player, false, "Already redeemed!")
 		return
 	end
 
+	-- 4. Mark as Redeemed
 	redeemed[code] = true
 
+	-- 5. Distribute Rewards
 	if codeData.Reward == "Coins" then
 		DataManager.AddCoins(player, codeData.Amount)
-		CodeResult:FireClient(player, true, "+" .. codeData.Amount .. " Coins redeemed!")
+		CodeResult:FireClient(player, true, "+" .. codeData.Amount .. " Coins!")
+
 	elseif codeData.Reward == "XP" then
 		DataManager.AddXP(player, codeData.Amount)
-		CodeResult:FireClient(player, true, "+" .. codeData.Amount .. " XP redeemed!")
+		CodeResult:FireClient(player, true, "+" .. codeData.Amount .. " XP!")
+
 	elseif codeData.Reward == "CoinDesignerCrate" then
 		GachaService.AddCrate(player, "CoinDesignerCrate", codeData.Amount)
-		CodeResult:FireClient(player, true, "x" .. codeData.Amount .. " Crate(s) added to your backpack!")
+		CodeResult:FireClient(player, true, "Crate added to inventory!")
 	end
 
-	print("[CODES] " .. player.Name .. " redeemed code: " .. code)
+	-- 6. Log for sanity
+	print(string.format("[CODES] %s successfully redeemed: %s", player.Name, code))
 end)
