@@ -1,51 +1,77 @@
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 
+-- Direct requires
+local VFXModule = require(ReplicatedStorage:WaitForChild("VFXModule"))
+
+-- Tracking connections to avoid memory leaks or double-sparkles
+local connectedPrompts = {}
+
+-------------------------------------------------
+-- Interaction VFX Hook
+-------------------------------------------------
+local function onInteractionSuccess(target)
+	-- Target is the actual object (Rack, Fabric, etc.)
+	VFXModule.PlayInteractionSparkle(target)
+	print("[VFX] Sparkle triggered on: " .. target.Name)
+end
+
+-------------------------------------------------
+-- Logic for single prompts
+-------------------------------------------------
 local function updateSinglePrompt(obj)
-	-- Look for the prompt
 	local prompt = obj:IsA("ProximityPrompt") and obj or obj:FindFirstChildOfClass("ProximityPrompt")
 
-	-- If the prompt isn't there yet, wait a tiny bit for it to spawn
 	if not prompt then
-		prompt = obj:WaitForChild("DesignerPickup", 2) or obj:WaitForChild("CriticSabotage", 2) or obj:FindFirstChildOfClass("ProximityPrompt")
+		prompt = obj:WaitForChild("DesignerPickup", 2) 
+			or obj:WaitForChild("CriticSabotage", 2) 
+			or obj:FindFirstChildOfClass("ProximityPrompt")
 	end
 
 	if not prompt then return end
 
+	-- Hook the VFX trigger once per prompt lifetime
+	if not connectedPrompts[prompt] then
+		connectedPrompts[prompt] = prompt.Triggered:Connect(function()
+			onInteractionSuccess(obj)
+		end)
+	end
+
 	local char = player.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 
-	-- THE FIX: If you're anchored, you're frozen/podiumed
+	-- If anchored, you're either on a podium or frozen (game over vibes)
 	local isFrozen = root and root.Anchored or false
 
 	local teamName = (player.Team and player.Team.Name) or ""
 	local isDesigner = (teamName == "Designers")
 	local isCritic = (teamName == "Critics")
 
-	-- Handle Designer Prompts
+	-- Designer Logic
 	if CollectionService:HasTag(obj, "DesignerPrompt") or CollectionService:HasTag(prompt, "DesignerPrompt") then
-		-- Designers can only interact if they aren't currently frozen
 		if isDesigner and not isFrozen then
 			if prompt.ActionText:find("Give") then
 				local hasFabric = player.Backpack:FindFirstChild("FBRoll") or (char and char:FindFirstChild("FBRoll"))
 				prompt.Enabled = (hasFabric ~= nil)
 			else
-				-- Unfreeze, Pickup, etc.
 				prompt.Enabled = true
 			end
 		else
 			prompt.Enabled = false
 		end
 
-		-- Handle Critic Prompts
+		-- Critic Logic
 	elseif CollectionService:HasTag(obj, "CriticPrompt") or CollectionService:HasTag(prompt, "CriticPrompt") then
-		-- Critics aren't usually frozen, but let's keep it tight
 		prompt.Enabled = isCritic and not isFrozen
 	end
 end
 
+-------------------------------------------------
+-- Refresh & Lifecycle
+-------------------------------------------------
 local function updateAllPrompts()
 	for _, obj in ipairs(CollectionService:GetTagged("DesignerPrompt")) do
 		updateSinglePrompt(obj)
@@ -55,13 +81,10 @@ local function updateAllPrompts()
 	end
 end
 
--- Refresh logic
 local function hookCharacter(char)
-	-- Update when tools are equipped/unequipped
 	char.ChildAdded:Connect(updateAllPrompts)
 	char.ChildRemoved:Connect(updateAllPrompts)
 
-	-- Update when the player gets frozen (Anchored changes)
 	local root = char:WaitForChild("HumanoidRootPart", 5)
 	if root then
 		root:GetPropertyChangedSignal("Anchored"):Connect(updateAllPrompts)
@@ -73,14 +96,14 @@ end
 player.CharacterAdded:Connect(hookCharacter)
 if player.Character then hookCharacter(player.Character) end
 
--- Check inventory for "Give Fabric" logic
+-- Inventory check for fabric logic
 player.Backpack.ChildAdded:Connect(updateAllPrompts)
 player.Backpack.ChildRemoved:Connect(updateAllPrompts)
 
--- Listen for Team changes
+-- Team update
 player:GetPropertyChangedSignal("Team"):Connect(updateAllPrompts)
 
--- The MVP Listeners: This handles new Racks/Podiums spawning in
+-- CollectionService Listeners for dynamically spawned objects
 CollectionService:GetInstanceAddedSignal("DesignerPrompt"):Connect(function(obj)
 	task.wait(0.1) 
 	updateSinglePrompt(obj)
@@ -91,11 +114,11 @@ CollectionService:GetInstanceAddedSignal("CriticPrompt"):Connect(function(obj)
 	updateSinglePrompt(obj)
 end)
 
--- Loop to catch any stragglers
+-- The "safety net" loop
 task.spawn(function()
 	while task.wait(2) do
 		updateAllPrompts()
 	end
 end)
 
-updateAllPrompts()
+print("[CLIENT] InteractionController ready. Prompts are sparkling.")
