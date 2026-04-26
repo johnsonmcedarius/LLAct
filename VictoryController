@@ -1,0 +1,97 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+local RoundEvents = require(game:GetService("ServerScriptService"):WaitForChild("RoundEvents"))
+
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+-- UI References
+local VictoryGui = PlayerGui:WaitForChild("VictoryGui")
+local VSIntroGui = PlayerGui:WaitForChild("VSIntroGui")
+local StatsGui = PlayerGui:WaitForChild("EndStatsGui")
+
+-- ── Viewport Helper ──────────────────────────────────────────────────────────
+local function SetupViewportCharacter(player, container, animationId)
+	container:ClearAllChildren()
+
+	local character = player.Character or player.CharacterAdded:Wait()
+	character.Archivable = true
+	local clone = character:Clone()
+	character.Archivable = false
+
+	local viewport = Instance.new("ViewportFrame")
+	viewport.Size = UDim2.fromScale(1, 1)
+	viewport.BackgroundTransparency = 1
+	viewport.Parent = container
+
+	local worldModel = Instance.new("WorldModel")
+	worldModel.Parent = viewport
+	clone.Parent = worldModel
+
+	local camera = Instance.new("Camera")
+	viewport.CurrentCamera = camera
+	camera.Parent = viewport
+
+	-- Position camera to frame the character
+	local hrp = clone:WaitForChild("HumanoidRootPart")
+	camera.CFrame = CFrame.new(hrp.Position + hrp.CFrame.LookVector * 5 + Vector3.new(0, 1.5, 0), hrp.Position)
+
+	-- Play Animation
+	local animator = clone:WaitForChild("Humanoid"):WaitForChild("Animator")
+	local anim = Instance.new("Animation")
+	anim.AnimationId = animationId
+	local track = animator:LoadAnimation(anim)
+	track.Looped = true
+	track:Play()
+
+	return viewport
+end
+
+-- ── Round Started (Intro VS Screen) ──────────────────────────────────────────
+RoundEvents.RoundStarted.Event:Connect(function(data)
+	VSIntroGui.Enabled = true
+
+	-- Setup Viewports for Critics vs Designers
+	-- This would loop through data.Critics and data.Designers 
+	-- and place them in the VS layout slots.
+
+	task.delay(4, function()
+		VSIntroGui.Enabled = false
+	end)
+end)
+
+-- ── Round Ended (Victory Reveal) ─────────────────────────────────────────────
+RoundEvents.RoundEnded.Event:Connect(function(victoryData)
+	local winner = victoryData.WinnerTeam
+	VictoryGui.Enabled = true
+
+	-- Logic for Critic Win
+	if winner == "Critics" then
+		VictoryGui.Title.Text = "THE CRITICS SHUT IT DOWN"
+		for i, criticPlayer in ipairs(victoryData.Critics) do
+			local slot = VictoryGui.Content:FindFirstChild("CriticSlot" .. i)
+			if slot then
+				SetupViewportCharacter(criticPlayer, slot, "rbxassetid://YOUR_CRITIC_ANIM_ID")
+			end
+		end
+
+		-- Logic for Designer Win (Top 3)
+	elseif winner == "Designers" then
+		VictoryGui.Title.Text = "THE COLLECTION IS A HIT"
+		for i, designerData in ipairs(victoryData.TopDesigners) do
+			local slot = VictoryGui.Content:FindFirstChild("DesignerSlot" .. i)
+			if slot and designerData.Player then
+				SetupViewportCharacter(designerData.Player, slot, "rbxassetid://YOUR_DESIGNER_ANIM_ID")
+			end
+		end
+	end
+
+	-- Show stats after reveal
+	task.delay(8, function()
+		VictoryGui.Enabled = false
+		StatsGui.Enabled = true
+	end)
+end)
