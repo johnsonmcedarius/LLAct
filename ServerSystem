@@ -1,16 +1,22 @@
+-- ServerSystem (Script in ServerScriptService)
 print("[SERVER] Initializing Fashion Systems...")
 
 local ServerScriptService = game:GetService("ServerScriptService")
 
--- 1. LOAD THE REGISTRY FIRST
+-- 1. Load Registry
 require(ServerScriptService:WaitForChild("ServiceRegistry"))
 
--- 2. WAKE UP CORE SERVICES
-
-print("[SERVER] Starting DataManager...")
+-- 2. Wake up Core Services (No individual prints to keep it clean)
 require(ServerScriptService:WaitForChild("DataManager"))
+require(ServerScriptService:WaitForChild("GachaService"))
+require(ServerScriptService:WaitForChild("TeamService"))
+require(ServerScriptService:WaitForChild("MapService"))
+require(ServerScriptService:WaitForChild("TimerService"))
+require(ServerScriptService:WaitForChild("VFXModule"))
 
-print("[SERVER] Starting SkinEffectService...")
+-- 3. Wake up Gameplay Logic
+-- require(ServerScriptService:WaitForChild("RelevanceSystem"))
+-- require(ServerScriptService:WaitForChild("RewardTracker"))
 require(ServerScriptService:WaitForChild("SkinEffectService")) 
 
-print("[SERVER] All systems green. Let's get this runway started.")
+print("[SERVER] All services initialized successfully.")
