@@ -5,6 +5,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
 local RoundEvents     = require(ServerScriptService:WaitForChild("RoundEvents"))
+local Config          = require(ReplicatedStorage:WaitForChild("SharedConfig"))
 
 -- Await dependencies
 local DataManager = ServiceRegistry.Await("DataManager")
@@ -19,30 +20,7 @@ local ShowMVP         = Remotes:WaitForChild("ShowMVP")
 local ShowEndStats    = Remotes:WaitForChild("ShowEndStats")
 local PostMatchXP     = Remotes:WaitForChild("PostMatchXP")
 
--- ── Point Values (Competition Scoring) ──────────────────────────────────────
-local POINTS = {
-	FABRIC_COLLECT = 10,
-	FABRIC_DUNK    = 50,  -- The main metric for Designers
-	SABOTAGE       = 40,  -- The main metric for Critics
-	CLEAN_RUNWAY   = 100, -- Bonus for winning
-}
-
--- ── Reward Config (Economy/Progression) ─────────────────────────────────────
-local REWARDS_CONFIG = {
-	DesignerWin       = {XP = 150,  Coins = 50},
-	FabricCollect     = {XP = 15,   Coins = 5},
-	FabricDunk        = {XP = 25,   Coins = 10},
-	UnfreezeAlly      = {XP = 50,   Coins = 15},
-	SurvivalPerMinute = {XP = 10,   Coins = 2},
-	CriticWin         = {XP = 200,  Coins = 75},
-	FreezeDesigner    = {XP = 75,   Coins = 20},
-	SabotageStation   = {XP = 25,   Coins = 10},
-	ApplyPressure     = {XP = 10,   Coins = 3},
-	DesignerMVP       = {XP = 100,  Coins = 50},
-	CriticMVP         = {XP = 120,  Coins = 60},
-}
-
-local roundScores    = {} -- [UserId] = {stats}
+local roundScores    = {}
 local roundActive    = false
 local pressureTimers = {}
 
@@ -58,7 +36,7 @@ local function initScore(player)
 		sabotages = 0,
 		xpEarned = 0,
 		coinsEarned = 0,
-		totalPoints = 0 -- Competition points for MVP engine
+		totalPoints = 0
 	}
 end
 
@@ -67,11 +45,11 @@ local function getScore(player)
 end
 
 local function giveReward(player, rewardKey)
-	local r = REWARDS_CONFIG[rewardKey]
+	local r = Config.REWARDS[rewardKey]
 	if not r then return end
 
 	if DataManager and DataManager.AddReward then
-		DataManager.AddReward(player, r.XP, r.Coins, true) -- Default to skip individual popups
+		DataManager.AddReward(player, r.XP, r.Coins, true)
 	end
 
 	local score = getScore(player)
@@ -88,7 +66,7 @@ function RewardTracker.OnFabricCollect(player)
 	local s = getScore(player)
 	if s then 
 		s.fabricCount += 1 
-		s.totalPoints += POINTS.FABRIC_COLLECT
+		s.totalPoints += Config.POINTS.FABRIC_COLLECT
 	end
 	giveReward(player, "FabricCollect")
 end
@@ -97,7 +75,7 @@ function RewardTracker.OnFabricDunk(player)
 	local s = getScore(player)
 	if s then 
 		s.dunks += 1 
-		s.totalPoints += POINTS.FABRIC_DUNK
+		s.totalPoints += Config.POINTS.FABRIC_DUNK
 	end
 	giveReward(player, "FabricDunk")
 
@@ -124,7 +102,7 @@ function RewardTracker.OnSabotage(critic)
 	local s = getScore(critic)
 	if s then 
 		s.sabotages += 1 
-		s.totalPoints += POINTS.SABOTAGE
+		s.totalPoints += Config.POINTS.SABOTAGE
 	end
 	giveReward(critic, "SabotageStation")
 
@@ -154,7 +132,6 @@ function RewardTracker.GetTopPerformers(count)
 		end
 	end
 
-	-- Sort by Dunks primarily, then by competition points
 	table.sort(list, function(a, b)
 		if a.dunks ~= b.dunks then
 			return a.dunks > b.dunks
@@ -180,7 +157,7 @@ task.spawn(function()
 		task.wait(60)
 		if not roundActive then continue end
 		for _, p in ipairs(Players:GetPlayers()) do
-			if p.Team and (p.Team.Name == "Designers" or p.Team.Name == "Critics") then
+			if p.Team and (p.Team.Name == Config.TEAMS.DESIGNER or p.Team.Name == Config.TEAMS.CRITIC) then
 				giveReward(p, "SurvivalPerMinute")
 				local lb = getDailyLookbook()
 				if lb then lb.AddProgress(p, "SurvivalMins", 1) end
@@ -196,17 +173,17 @@ task.spawn(function()
 		if not roundActive then pressureTimers = {} continue end
 
 		for _, critic in ipairs(Players:GetPlayers()) do
-			if not (critic.Team and critic.Team.Name == "Critics") then continue end
+			if not (critic.Team and critic.Team.Name == Config.TEAMS.CRITIC) then continue end
 			local cr = critic.Character and critic.Character:FindFirstChild("HumanoidRootPart")
 			if not cr then continue end
 
 			local closeDesigner, closestDist = nil, math.huge
 			for _, designer in ipairs(Players:GetPlayers()) do
-				if not (designer.Team and designer.Team.Name == "Designers") then continue end
+				if not (designer.Team and designer.Team.Name == Config.TEAMS.DESIGNER) then continue end
 				local dr = designer.Character and designer.Character:FindFirstChild("HumanoidRootPart")
 				if not dr then continue end
 				local dist = (cr.Position - dr.Position).Magnitude
-				if dist < 10 and dist < closestDist then
+				if dist < Config.PRESSURE.DETECTION_RANGE and dist < closestDist then
 					closestDist   = dist
 					closeDesigner = designer
 				end
@@ -215,7 +192,7 @@ task.spawn(function()
 			if closeDesigner then
 				local entry = pressureTimers[critic.UserId]
 				if entry and entry.targetUserId == closeDesigner.UserId then
-					if os.clock() - entry.startTime >= 15 then
+					if os.clock() - entry.startTime >= Config.PRESSURE.TIME_THRESHOLD then
 						RewardTracker.OnApplyPressure(critic)
 						pressureTimers[critic.UserId] = nil
 					end
@@ -238,11 +215,15 @@ local function calculateMVP()
 		local s = getScore(p)
 		if not s then continue end
 
-		if p.Team and p.Team.Name == "Designers" then
-			local score = (s.dunks * 10) + (s.fabricCount * 2) + (s.unfreezes * 5) + (s.neverFrozen and 15 or 0)
+		if p.Team and p.Team.Name == Config.TEAMS.DESIGNER then
+			local score = (s.dunks * Config.MVP_WEIGHTS.DUNK_MULTIPLIER) 
+				+ (s.fabricCount * Config.MVP_WEIGHTS.FABRIC_MULTIPLIER) 
+				+ (s.unfreezes * Config.MVP_WEIGHTS.UNFREEZE_MULTIPLIER) 
+				+ (s.neverFrozen and Config.MVP_WEIGHTS.NEVER_FROZEN_BONUS or 0)
 			if score > bestDesignerScore then bestDesignerScore = score designerMVP = p end
-		elseif p.Team and p.Team.Name == "Critics" then
-			local score = (s.freezes * 10) + (s.sabotages * 5)
+		elseif p.Team and p.Team.Name == Config.TEAMS.CRITIC then
+			local score = (s.freezes * Config.MVP_WEIGHTS.FREEZE_MULTIPLIER) 
+				+ (s.sabotages * Config.MVP_WEIGHTS.SABOTAGE_MULTIPLIER)
 			if score > bestCriticScore then bestCriticScore = score criticMVP = p end
 		end
 	end
@@ -262,14 +243,13 @@ RoundEvents.RoundEnded.Event:Connect(function(winningTeamName)
 	if not roundActive then return end
 	roundActive = false
 
-	-- Winning Team Bonus
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p.Team then
 			local score = getScore(p)
 			if p.Team.Name == winningTeamName then
-				if score then score.totalPoints += POINTS.CLEAN_RUNWAY end
+				if score then score.totalPoints += Config.POINTS.CLEAN_RUNWAY end
 
-				if winningTeamName == "Designers" then
+				if winningTeamName == Config.TEAMS.DESIGNER then
 					giveReward(p, "DesignerWin")
 				else
 					giveReward(p, "CriticWin")
@@ -281,9 +261,9 @@ RoundEvents.RoundEnded.Event:Connect(function(winningTeamName)
 	task.wait(0.5)
 
 	local designerMVP, criticMVP = calculateMVP()
-	local mvpPlayer = (winningTeamName == "Designers") and designerMVP or criticMVP
-	local mvpTitle  = (winningTeamName == "Designers") and "The Lead Designer" or "The Lead Editor"
-	local mvpKey    = (winningTeamName == "Designers") and "DesignerMVP"      or "CriticMVP"
+	local mvpPlayer = (winningTeamName == Config.TEAMS.DESIGNER) and designerMVP or criticMVP
+	local mvpTitle  = (winningTeamName == Config.TEAMS.DESIGNER) and "The Lead Designer" or "The Lead Editor"
+	local mvpKey    = (winningTeamName == Config.TEAMS.DESIGNER) and "DesignerMVP" or "CriticMVP"
 
 	if mvpPlayer then
 		giveReward(mvpPlayer, mvpKey)
