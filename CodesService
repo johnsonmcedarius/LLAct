@@ -3,12 +3,12 @@ local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local ServiceRegistry = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local Config         = require(ReplicatedStorage:WaitForChild("SharedConfig"))
 local DataManager     = ServiceRegistry.Await("DataManager")
 local GachaService    = ServiceRegistry.Await("GachaService")
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
--- Helper to ensure remotes exist without crashing the script
 local function getRemote(name)
 	local r = Remotes:FindFirstChild(name)
 	if not r then 
@@ -21,14 +21,6 @@ end
 
 local RedeemCode = getRemote("RedeemCode")
 local CodeResult = getRemote("CodeResult")
-
--- The Code Database
-local CODES = {
-	LASTLOOK  = {Reward = "Coins",             Amount = 100, Active = true},
-	RUNWAY100 = {Reward = "Coins",             Amount = 100, Active = true},
-	VIPACCESS = {Reward = "CoinDesignerCrate", Amount = 1,   Active = true},
-	XPBOOST   = {Reward = "XP",                Amount = 200, Active = true},
-}
 
 -- Helper to safely grab player data
 local function getRedeemedCodes(player)
@@ -43,7 +35,7 @@ RedeemCode.OnServerEvent:Connect(function(player, code)
 	if type(code) ~= "string" then return end
 	code = code:upper():gsub("%s+", "")
 
-	local codeData = CODES[code]
+	local codeData = Config.CODES[code]
 
 	-- 2. Basic Validation
 	if not codeData then
