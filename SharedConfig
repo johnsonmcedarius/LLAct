@@ -1,5 +1,11 @@
 local SharedConfig = {
-	DATA_VERSION = "v1.1",
+	DATA_VERSION = "v1.4",
+
+	-- ── Team Names ──
+	TEAMS = {
+		DESIGNER = "Designers",
+		CRITIC = "Critics",
+	},
 
 	-- ── Core Gameplay Constants ──
 	MAX_INTERACTION_DISTANCE = 15, 
@@ -7,6 +13,7 @@ local SharedConfig = {
 	ROUND_DURATION = 300,
 	INTERMISSION_DURATION = 15,
 	RACK_COOLDOWN = 5,
+	PASS_RANGE = 8,
 
 	-- ── Sabotage Balance (The Rule of Two) ──
 	SABOTAGE_LIMIT = 2,       
@@ -24,7 +31,7 @@ local SharedConfig = {
 	-- ── Economics & Gacha ──
 	COIN_CRATE_COST = 500,
 	PITY_THRESHOLD = 50,          
-	ROBUX_PRODUCT_ID = 0,         -- Placeholder for Robuxcrate
+	ROBUX_PRODUCT_ID = 0,
 
 	-- Rarity Weights (Total: 1000)
 	RARITY_WEIGHTS = { 
@@ -51,7 +58,8 @@ local SharedConfig = {
 		WEAPON_SKINS = "WeaponSkins",
 		SKIN_EFFECTS = "SkinEffects",
 		SHOWSTOPPERS = "Showstoppers",
-		EMOTES = "Emotes"
+		EMOTES = "Emotes",
+		ABILITIES = "Abilities",
 	},
 
 	-- ── Progression ──
@@ -68,8 +76,70 @@ local SharedConfig = {
 		[7] = {Type = "Crate", Amount = 1, CrateType = "CoinDesignerCrate"}
 	},
 
+	-- ── Competition Points (MVP Engine) ──
+	POINTS = {
+		FABRIC_COLLECT = 10,
+		FABRIC_DUNK    = 50,
+		SABOTAGE       = 40,
+		CLEAN_RUNWAY   = 100,
+	},
+
+	-- ── Reward Config (XP & Coins) ──
+	REWARDS = {
+		DesignerWin       = {XP = 150,  Coins = 50},
+		FabricCollect     = {XP = 15,   Coins = 5},
+		FabricDunk        = {XP = 25,   Coins = 10},
+		UnfreezeAlly      = {XP = 50,   Coins = 15},
+		SurvivalPerMinute = {XP = 10,   Coins = 2},
+		CriticWin         = {XP = 200,  Coins = 75},
+		FreezeDesigner    = {XP = 75,   Coins = 20},
+		SabotageStation   = {XP = 25,   Coins = 10},
+		ApplyPressure     = {XP = 10,   Coins = 3},
+		DesignerMVP       = {XP = 100,  Coins = 50},
+		CriticMVP         = {XP = 120,  Coins = 60},
+	},
+
+	-- ── MVP Scoring Weights ──
+	MVP_WEIGHTS = {
+		DUNK_MULTIPLIER = 10,
+		FABRIC_MULTIPLIER = 2,
+		UNFREEZE_MULTIPLIER = 5,
+		NEVER_FROZEN_BONUS = 15,
+		FREEZE_MULTIPLIER = 10,
+		SABOTAGE_MULTIPLIER = 5,
+	},
+
+	-- ── Pressure Detection ──
+	PRESSURE = {
+		DETECTION_RANGE = 10,
+		TIME_THRESHOLD = 15,
+	},
+
+	-- ── Redeemable Codes ──
+	CODES = {
+		LASTLOOK  = {Reward = "Coins",             Amount = 100, Active = true},
+		RUNWAY100 = {Reward = "Coins",             Amount = 100, Active = true},
+		VIPACCESS = {Reward = "CoinDesignerCrate", Amount = 1,   Active = true},
+		XPBOOST   = {Reward = "XP",                Amount = 200, Active = true},
+	},
+
+	-- ── Jump Pad Settings ──
+	JUMPPAD = {
+		HEIGHT = 100,
+		COOLDOWN = 0.1,
+		RESET_DELAY = 0.5,
+		DEFAULT_JUMP_HEIGHT = 7.2,
+	},
+
+	-- ── CollectionService Tags ──
+	TAGS = {
+		JUMPPAD = "JumpPad",
+		DESIGNER_PROMPT = "DesignerPrompt",
+		CRITIC_PROMPT = "CriticPrompt",
+	},
+
 	-- ── Character Stats & Abilities ──
-	MAX_CHARGE = 100, -- Showstopper energy bar
+	MAX_CHARGE = 100,
 	CANCELLATION_TIME = 30,
 	ANTI_CAMP_DISTANCE = 15,
 	DUNK_DENIED_RANGE = 5,
