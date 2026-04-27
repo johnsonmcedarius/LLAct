@@ -1,0 +1,37 @@
+local AbilityConfig = {
+	-- ── Ability Prices (Coins) ──
+	PRICES = {
+		Common    = 500,
+		Rare      = 1200,
+		Epic      = 3000,
+		Legendary = 7500,
+		Mythic    = 20000,
+	},
+
+	-- ── Ability Pool ──
+	ABILITIES = {
+		{Name = "Glitter Perfume Bomb", Rarity = "Common"},
+		{Name = "Camera Flash",        Rarity = "Common"},
+		{Name = "High Heel Trap",      Rarity = "Common"},
+		{Name = "Double Spray",        Rarity = "Rare"},
+		{Name = "Chain Flash",         Rarity = "Rare"},
+		{Name = "Heel Storm",          Rarity = "Epic"},
+		{Name = "Fashion Surge",       Rarity = "Epic"},
+		{Name = "The Takedown",        Rarity = "Legendary"},
+		{Name = "Style Shock",         Rarity = "Mythic"},
+	},
+
+	-- ── Helper Functions ──
+	GetAbilityData = function(self, name)
+		for _, ability in ipairs(self.ABILITIES) do
+			if ability.Name == name then return ability end
+		end
+		return nil
+	end,
+
+	GetPrice = function(self, rarity)
+		return self.PRICES[rarity] or 500
+	end,
+}
+
+return AbilityConfig
