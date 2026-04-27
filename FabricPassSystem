@@ -2,18 +2,18 @@ local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local CollectionService   = game:GetService("CollectionService")
-local RunService          = game:GetService("RunService")
 
 local ServiceRegistry    = require(ServerScriptService:WaitForChild("ServiceRegistry"))
+local Config             = require(ReplicatedStorage:WaitForChild("SharedConfig"))
 local ShowstopperService = ServiceRegistry.Await("ShowstopperService")
 local SoundService       = require(ReplicatedStorage:WaitForChild("SoundService"))
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
 local function getRemote(name)
-    local r = Remotes:FindFirstChild(name)
-    if not r then r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes end
-    return r
+	local r = Remotes:FindFirstChild(name)
+	if not r then r = Instance.new("RemoteEvent") r.Name = name r.Parent = Remotes end
+	return r
 end
 
 local PassFabric      = getRemote("PassFabric")
@@ -21,8 +21,8 @@ local PlayPoofVFX     = getRemote("PlayPoofVFX")
 local SetTeammateGlow = getRemote("SetTeammateGlow")
 local ShowRewardPopup = getRemote("ShowRewardPopup")
 
-local PASS_RANGE     = 8
-local DESIGNER_TEAM  = "Designers"
+local PASS_RANGE     = Config.PASS_RANGE
+local DESIGNER_TEAM  = Config.TEAMS.DESIGNER
 local PASS_DEBOUNCE  = 1.5 
 local UPDATE_INTERVAL = 0.3
 
@@ -52,29 +52,24 @@ end
 -- Core pass logic (server-authoritative)
 -------------------------------------------------
 local function executePass(holder, targetPlayer)
-    -- Team checks
     if not isDesigner(holder) then return end
     if not (targetPlayer and isDesigner(targetPlayer)) then return end
     if holder == targetPlayer then return end
 
-    -- Debounce: prevent exploit spam
     local now = os.clock()
     if (lastPassTime[holder.UserId] or 0) + PASS_DEBOUNCE > now then
         return
     end
     lastPassTime[holder.UserId] = now
 
-    -- Inventory check
     local fabricTool = getFabricTool(holder)
     if not fabricTool then return end
 
-    -- Distance check
     local hr = getRoot(holder)
     local tr = getRoot(targetPlayer)
     if not hr or not tr then return end
     if (hr.Position - tr.Position).Magnitude > PASS_RANGE + 5 then return end
 
-    -- Don't pass to someone who already has fabric
     if getFabricTool(targetPlayer) then 
         ShowRewardPopup:FireClient(holder, "Teammate already has fabric!", "")
         return 
@@ -82,7 +77,6 @@ local function executePass(holder, targetPlayer)
 
     print("[PASS] " .. holder.Name .. " -> " .. targetPlayer.Name)
 
-    -- Visual feedback flag
     if holder.Character then
         holder.Character:SetAttribute("IsPassing", true)
         task.delay(0.5, function()
@@ -93,7 +87,6 @@ local function executePass(holder, targetPlayer)
     PlayPoofVFX:FireAllClients(hr.Position)
     SoundService.FireToAll("FabricPass", hr.Position)
 
-    -- Move tool
     fabricTool.Parent = targetPlayer.Backpack
 
     task.wait(0.1)
@@ -101,7 +94,6 @@ local function executePass(holder, targetPlayer)
 
     ShowstopperService.OnFabricPass(holder, targetPlayer)
 
-    -- DailyLookbook progress
     local lb = ServiceRegistry.Get("DailyLookbook")
     if lb then
         lb.AddProgress(holder,       "Passes", 1)
@@ -112,7 +104,6 @@ local function executePass(holder, targetPlayer)
     ShowRewardPopup:FireClient(targetPlayer, "+10 Showstopper", "")
 end
 
--- Remote handler (for manual pass requests)
 PassFabric.OnServerEvent:Connect(executePass)
 
 -------------------------------------------------
@@ -131,7 +122,6 @@ local function destroyPromptForReceiver(receiverUserId)
     
     receiverPrompts[receiverUserId] = nil
     
-    -- Remove from holder's list
     local holderList = holderReceivers[data.holderUserId]
     if holderList then
         for i, uid in ipairs(holderList) do
@@ -148,7 +138,6 @@ local function createPromptOnReceiver(holder, receiver)
     local rr = getRoot(receiver)
     if not hr or not rr then return end
     
-    -- Don't create if receiver already has a prompt
     if receiverPrompts[receiver.UserId] then return end
     
     local prompt = Instance.new("ProximityPrompt")
@@ -162,7 +151,6 @@ local function createPromptOnReceiver(holder, receiver)
     prompt.Parent = rr
     
     local connection = prompt.Triggered:Connect(function(playerWhoTriggered)
-        -- Only the holder can trigger this
         if playerWhoTriggered ~= holder then return end
         executePass(holder, receiver)
     end)
@@ -173,7 +161,6 @@ local function createPromptOnReceiver(holder, receiver)
         connection = connection
     }
     
-    -- Track this receiver under the holder
     if not holderReceivers[holder.UserId] then
         holderReceivers[holder.UserId] = {}
     end
@@ -213,12 +200,11 @@ local function updatePromptsForHolder(holder)
     local hr = getRoot(holder)
     if not hr then return end
     
-    -- Find all nearby Designers without FBRoll
     local nearbyReceivers = {}
     for _, p in ipairs(Players:GetPlayers()) do
         if p == holder then continue end
         if not isDesigner(p) then continue end
-        if getFabricTool(p) then continue end -- Skip those who have fabric
+        if getFabricTool(p) then continue end
         
         local pr = getRoot(p)
         if not pr then continue end
@@ -229,7 +215,6 @@ local function updatePromptsForHolder(holder)
         end
     end
     
-    -- Remove prompts for receivers who are no longer in range
     local currentReceivers = holderReceivers[holder.UserId] or {}
     for i = #currentReceivers, 1, -1 do
         local receiverUserId = currentReceivers[i]
@@ -245,14 +230,12 @@ local function updatePromptsForHolder(holder)
         end
     end
     
-    -- Create prompts for new receivers
     for _, receiver in ipairs(nearbyReceivers) do
         if not receiverPrompts[receiver.UserId] then
             createPromptOnReceiver(holder, receiver)
         end
     end
     
-    -- Update glow on receivers (highlight them for the holder)
     SetTeammateGlow:FireClient(holder, nearbyReceivers, true)
 end
 
@@ -263,7 +246,6 @@ task.spawn(function()
     while true do
         task.wait(UPDATE_INTERVAL)
         
-        -- Find all holders and update their prompts
         for _, p in ipairs(Players:GetPlayers()) do
             if isDesigner(p) and getFabricTool(p) then
                 updatePromptsForHolder(p)
@@ -278,7 +260,6 @@ end)
 local function watchPlayer(player)
     local function onChildAdded(child)
         if child.Name == "FBRoll" and isDesigner(player) then
-            -- Holder will be picked up by the update loop
             print("[FABRIC] " .. player.Name .. " picked up FBRoll - prompts will appear on nearby teammates")
         end
     end
@@ -314,4 +295,4 @@ Players.PlayerRemoving:Connect(function(p)
     lastPassTime[p.UserId] = nil
 end)
 
-print("[FABRICPASS] System initialized")
+print("[FABRICPASS] System ready - using SharedConfig values")]
