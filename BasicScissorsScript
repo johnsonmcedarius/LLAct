@@ -29,7 +29,17 @@ local function getTarget()
 	local root = char:FindFirstChild("HumanoidRootPart")
 	if not root then return nil end
 
-	-- Raycast directly in front to find a Designer
+	-- Determine opposing team
+	local opposingTeam = nil
+	if player.Team and player.Team.Name == DESIGNER_TEAM then
+		opposingTeam = CRITIC_TEAM
+	elseif player.Team and player.Team.Name == CRITIC_TEAM then
+		opposingTeam = DESIGNER_TEAM
+	else
+		return nil -- Not on a valid team
+	end
+
+	-- Raycast directly in front to find an opponent
 	local rayParams = RaycastParams.new()
 	rayParams.FilterDescendantsInstances = {char}
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -41,7 +51,7 @@ local function getTarget()
 		if hitChar and hitChar:FindFirstChild("Humanoid") then
 			local hitPlayer = Players:GetPlayerFromCharacter(hitChar)
 			-- Ensure they are on the opposing team and not already frozen
-			if hitPlayer and hitPlayer.Team and hitPlayer.Team.Name == DESIGNER_TEAM then
+			if hitPlayer and hitPlayer.Team and hitPlayer.Team.Name == opposingTeam then
 				if not hitChar:FindFirstChild("CancelCountdown") then -- Check if already podiumed
 					return hitChar
 				end
@@ -57,10 +67,10 @@ end
 tool.Activated:Connect(function()
 	if debounce then return end
 
-	-- Team Check: Only Critics can use this to freeze
-	if not (player.Team and player.Team.Name == CRITIC_TEAM) then 
-		print("[WEAPON] Only Critics can use BasicScissors.")
-		return 
+	-- Team Check: Must be on Designers or Critics
+	if not (player.Team and (player.Team.Name == CRITIC_TEAM or player.Team.Name == DESIGNER_TEAM)) then
+		print("[WEAPON] You must be on Designers or Critics to use BasicScissors.")
+		return
 	end
 
 	local char = tool.Parent
@@ -96,5 +106,6 @@ end)
 
 -- Tool setup
 tool.Equipped:Connect(function()
-	print("[WEAPON] BasicScissors equipped. Ready to cancel some designers.")
+	local teamName = player.Team and player.Team.Name or "Unknown"
+	print("[WEAPON] BasicScissors equipped. Ready to freeze " .. (teamName == "Designers" and "Critics" or "Designers") .. "!")
 end)
