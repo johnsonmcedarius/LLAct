@@ -32,9 +32,7 @@ local RackStateChanged = getRemote("RackStateChanged")
 local ShowRewardPopup = getRemote("ShowRewardPopup")
 
 -- ── Constants & Balancing ──
-local MAX_GLOBAL_SABOTAGES   = 2
 local SABOTAGE_DURATION      = 20
-local SABOTAGE_COOLDOWN      = 30
 local SABOTAGE_HOLD_DURATION = 3.5
 local REBOOT_HOLD_DURATION   = 3
 local NORMAL_PICKUP_HOLD     = 2.5
@@ -53,8 +51,6 @@ local GameSettings = {
 local designerScore = 0
 local criticScore = 0
 local activeSabotages = 0
-local criticSabotageCooldown = {}
-local designerSabotageCooldown = {}
 local tangleTimers = {}
 
 local function UpdateDualScoreUI()
@@ -114,7 +110,7 @@ function FabricManager.ResetScores()
 end
 
 function FabricManager.IsSabotageAvailable()
-	return activeSabotages < MAX_GLOBAL_SABOTAGES
+	return true -- Sabotage is now only on scoring zones, not racks
 end
 
 local function unsabotageRack(rack)
@@ -124,10 +120,16 @@ local function unsabotageRack(rack)
 	setRackState(rack, false)
 	activeSabotages = math.max(0, activeSabotages - 1)
 
+	-- Reset both prompts to normal state
 	local dp = rack:FindFirstChild("DesignerPickup")
+	local cp = rack:FindFirstChild("CriticPickup")
 	if dp then 
 		dp.HoldDuration = NORMAL_PICKUP_HOLD
 		dp.ActionText = "Collect Fabric"
+	end
+	if cp then
+		cp.HoldDuration = NORMAL_PICKUP_HOLD
+		cp.ActionText = "Collect Fabric"
 	end
 end
 
