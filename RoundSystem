@@ -27,17 +27,52 @@ local function CheckWinCondition()
 	if not roundActive then return end
 
 	local designersTeam = Teams:FindFirstChild("Designers")
-	local aliveDesigners = designersTeam and #designersTeam:GetPlayers() or 0
-	local allFrozen = ReplicatedStorage:GetAttribute("AllDesignersFrozen")
+	local criticsTeam = Teams:FindFirstChild("Critics")
 
-	-- 1. Critics Win: Everyone is frozen or the team is empty
-	if allFrozen or aliveDesigners == 0 then
+	local aliveDesigners = designersTeam and #designersTeam:GetPlayers() or 0
+	local aliveCritics = criticsTeam and #criticsTeam:GetPlayers() or 0
+
+	local allDesignersFrozen = ReplicatedStorage:GetAttribute("AllDesignersFrozen")
+	local allCriticsFrozen = ReplicatedStorage:GetAttribute("AllCriticsFrozen")
+
+	-- Get dynamic target score from MatchRegistry
+	local MatchRegistry = ServiceRegistry.Get("MatchRegistry")
+	local targetScore = MatchRegistry and MatchRegistry.GetTargetScore() or 5
+
+	-- Get current scores from FabricManager
+	local FabricManager = ServiceRegistry.Get("FabricManager")
+	local designerScore = FabricManager and FabricManager.GetDesignerScore() or 0
+	local criticScore = FabricManager and FabricManager.GetCriticScore() or 0
+
+	-- 1. SCORE-BASED WIN: Either team reaches target
+	if designerScore >= targetScore then
+		roundWinner = "Designers"
+		roundActive = false
+		print("[ROUND] Designers win by reaching " .. targetScore .. " fabric!")
+		return
+	end
+	if criticScore >= targetScore then
 		roundWinner = "Critics"
 		roundActive = false
+		print("[ROUND] Critics win by reaching " .. targetScore .. " shreds!")
 		return
 	end
 
-	-- 2. Draw: Not enough players to keep the vibe going
+	-- 2. FREEZE WIPE: Last Team Standing
+	if allDesignersFrozen or aliveDesigners == 0 then
+		roundWinner = "Critics"
+		roundActive = false
+		print("[ROUND] Critics win - all Designers frozen!")
+		return
+	end
+	if allCriticsFrozen or aliveCritics == 0 then
+		roundWinner = "Designers"
+		roundActive = false
+		print("[ROUND] Designers win - all Critics frozen!")
+		return
+	end
+
+	-- 3. DRAW: Not enough players
 	if #Players:GetPlayers() < MIN_PLAYERS then
 		roundWinner = "Draw"
 		roundActive = false
@@ -47,7 +82,8 @@ end
 
 -- Event Listeners (Connect once, stays active)
 ReplicatedStorage:GetAttributeChangedSignal("AllDesignersFrozen"):Connect(CheckWinCondition)
-Teams.ChildAdded:Connect(CheckWinCondition) -- Safety for team swaps
+ReplicatedStorage:GetAttributeChangedSignal("AllCriticsFrozen"):Connect(CheckWinCondition)
+Teams.ChildAdded:Connect(CheckWinCondition)
 Teams.ChildRemoved:Connect(CheckWinCondition)
 Players.PlayerRemoving:Connect(CheckWinCondition)
 
@@ -58,6 +94,12 @@ local function StartRoundLoop()
 		roundWinner = nil
 		roundActive = false
 		ReplicatedStorage:SetAttribute("AllDesignersFrozen", false)
+		ReplicatedStorage:SetAttribute("AllCriticsFrozen", false)
+
+		-- Reset scores
+		local FabricManager = ServiceRegistry.Get("FabricManager")
+		if FabricManager then FabricManager.ResetScores() end
+
 		TeamService.ResetTeams()
 		MapService.Cleanup()
 
@@ -87,9 +129,22 @@ local function StartRoundLoop()
 		-- GO LIVE
 		roundActive = true
 		TimerService.StartCountdown(ROUND_DURATION, "The Show is Live!", function()
-			-- Timer expired callback: Designers held out!
+			-- Timer expired callback: TIE-BREAKER - Most fabric wins
 			if roundActive then
-				roundWinner = "Designers"
+				local FabricManager = ServiceRegistry.Get("FabricManager")
+				local dScore = FabricManager and FabricManager.GetDesignerScore() or 0
+				local cScore = FabricManager and FabricManager.GetCriticScore() or 0
+
+				if dScore > cScore then
+					roundWinner = "Designers"
+					print("[ROUND] Timer expired - Designers win with " .. dScore .. " vs " .. cScore)
+				elseif cScore > dScore then
+					roundWinner = "Critics"
+					print("[ROUND] Timer expired - Critics win with " .. cScore .. " vs " .. dScore)
+				else
+					roundWinner = "Draw"
+					print("[ROUND] Timer expired - Draw! Both teams tied at " .. dScore)
+				end
 				roundActive = false
 			end
 		end)
@@ -102,7 +157,10 @@ local function StartRoundLoop()
 		-- Post-Round Logic
 		if roundWinner == "Critics" then
 			print("[ROUND] Critics won. Initiating mass cancellation...")
-			RelevanceSystem.CancelAllDesigners() 
+			RelevanceSystem.CancelAllDesigners()
+		elseif roundWinner == "Designers" then
+			print("[ROUND] Designers won. Initiating mass cancellation...")
+			RelevanceSystem.CancelAllCritics()
 		end
 
 		-- Dynamic UI Status
