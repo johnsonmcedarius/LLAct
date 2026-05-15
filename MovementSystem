@@ -80,7 +80,7 @@ end
 player.CharacterAdded:Connect(setupCharacter)
 if player.Character then setupCharacter(player.Character) end
 
--- ── The "Fashion Dash" Logic ────────────────────────────────────────────────
+
 local function getDashDirection()
 	local move = humanoid.MoveDirection
 	if move.Magnitude == 0 then return "Forward", root.CFrame.LookVector end
@@ -99,8 +99,9 @@ end
 local function performDash()
 	if not humanoid or dashing or os.clock() < dashCooldownUntil then return end
 
-	-- Security: Only Designers get the speed boost vibes
-	if not (player.Team and player.Team.Name == "Designers") then return end
+	-- Universal dash - both teams can use
+	if not player.Team then return end
+	if player.Team.Name ~= "Designers" and player.Team.Name ~= "Critics" then return end
 
 	dashing = true
 	dashCooldownUntil = os.clock() + (Config.DASH_COOLDOWN or 0.5)
