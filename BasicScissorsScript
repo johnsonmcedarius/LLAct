@@ -4,10 +4,11 @@ local Debris = game:GetService("Debris")
 
 local player = Players.LocalPlayer
 local SoundService = require(ReplicatedStorage:WaitForChild("SoundService"))
+local Config = require(ReplicatedStorage:WaitForChild("SharedConfig"))
 
 -- Config
 local REACH = 8 -- How far the scissors can "snip"
-local COOLDOWN = 0.8
+local COOLDOWN = Config.FREEZE_COOLDOWN or 4.0 -- Anti-spam from SharedConfig
 local CRITIC_TEAM = "Critics"
 local DESIGNER_TEAM = "Designers"
 
