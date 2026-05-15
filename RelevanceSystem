@@ -22,9 +22,10 @@ local PlayPoofVFX      = getRemote("PlayPoofVFX")
 local ShowBanner       = getRemote("ShowBanner") 
 
 -- ── Config ───────────────────────────────────────────────────────────────────
-local VIP_PASS_ID = 123456789 -- CHANGE THIS to your real ID before May 15th!
+local VIP_PASS_ID = 123456789 -- CHANGE THIS to your real ID before release!
 local MAX_STRIKES = 3
 local DESIGNER_TEAM = "Designers"
+local CRITIC_TEAM = "Critics"
 
 local strikeData = {}
 
@@ -96,7 +97,9 @@ end
 local RelevanceSystem = {}
 
 function RelevanceSystem.AddStrike(player)
-	if not (player.Team and player.Team.Name == DESIGNER_TEAM) then return false end
+	-- Universal - works for both teams
+	if not player.Team then return false end
+	if player.Team.Name ~= DESIGNER_TEAM and player.Team.Name ~= CRITIC_TEAM then return false end
 
 	local strikes = getStrikes(player) + 1
 	strikeData[player.UserId] = strikes
@@ -111,7 +114,7 @@ function RelevanceSystem.AddStrike(player)
 		if root then SoundService.FireToClient(player, "Strike2", root.Position) end
 	elseif strikes >= MAX_STRIKES then
 		eliminatePlayer(player)
-		return true 
+		return true
 	end
 
 	return false
@@ -122,9 +125,20 @@ function RelevanceSystem.CancelAllDesigners()
 	local designersTeam = Teams:FindFirstChild(DESIGNER_TEAM)
 	if not designersTeam then return end
 
-	print("[RELEVANCE] Mass Cancellation initiated. Clearing the runway...")
+	print("[RELEVANCE] Mass Cancellation initiated for Designers. Clearing the runway...")
 
 	for _, player in ipairs(designersTeam:GetPlayers()) do
+		eliminatePlayer(player)
+	end
+end
+
+function RelevanceSystem.CancelAllCritics()
+	local criticsTeam = Teams:FindFirstChild(CRITIC_TEAM)
+	if not criticsTeam then return end
+
+	print("[RELEVANCE] Mass Cancellation initiated for Critics. Clearing the runway...")
+
+	for _, player in ipairs(criticsTeam:GetPlayers()) do
 		eliminatePlayer(player)
 	end
 end
