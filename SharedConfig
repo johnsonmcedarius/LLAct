@@ -15,7 +15,7 @@ local SharedConfig = {
 	RACK_COOLDOWN = 5,
 	PASS_RANGE = 8,
 
-	-- ── Sabotage Balance (The Rule of Two) ──
+	-- ── Sabotage Balance ──
 	SABOTAGE_LIMIT = 2,       
 	SABOTAGE_DURATION = 20,       
 	SABOTAGE_COOLDOWN = 45,       
@@ -42,7 +42,7 @@ local SharedConfig = {
 		Mythic = 10 
 	},
 
-	-- Duplicate Compensation (In-game Currency)
+	-- Duplicate Rewards (Coins)
 	DUPLICATE_REWARDS = {
 		Common = 25,
 		Rare = 75,
@@ -80,23 +80,27 @@ local SharedConfig = {
 	POINTS = {
 		FABRIC_COLLECT = 10,
 		FABRIC_DUNK    = 50,
+		SHRED_FABRIC   = 50,
 		SABOTAGE       = 40,
 		CLEAN_RUNWAY   = 100,
 	},
 
 	-- ── Reward Config (XP & Coins) ──
+	-- PARITY: Both teams have equal rewards
 	REWARDS = {
-		DesignerWin       = {XP = 150,  Coins = 50},
+		DesignerWin       = {XP = 175,  Coins = 60},
+		CriticWin         = {XP = 175,  Coins = 60},
 		FabricCollect     = {XP = 15,   Coins = 5},
 		FabricDunk        = {XP = 25,   Coins = 10},
+		FabricShred       = {XP = 25,   Coins = 10},
 		UnfreezeAlly      = {XP = 50,   Coins = 15},
 		SurvivalPerMinute = {XP = 10,   Coins = 2},
-		CriticWin         = {XP = 200,  Coins = 75},
 		FreezeDesigner    = {XP = 75,   Coins = 20},
+		FreezeCritic      = {XP = 75,   Coins = 20},
 		SabotageStation   = {XP = 25,   Coins = 10},
 		ApplyPressure     = {XP = 10,   Coins = 3},
 		DesignerMVP       = {XP = 100,  Coins = 50},
-		CriticMVP         = {XP = 120,  Coins = 60},
+		CriticMVP         = {XP = 100,  Coins = 50},
 	},
 
 	-- ── MVP Scoring Weights ──
@@ -127,7 +131,7 @@ local SharedConfig = {
 	JUMPPAD = {
 		HEIGHT = 100,
 		COOLDOWN = 0.1,
-		RESET_DELAY = 0.5,
+		RESET_DELAY = 0.1,
 		DEFAULT_JUMP_HEIGHT = 7.2,
 	},
 
@@ -145,16 +149,19 @@ local SharedConfig = {
 	DUNK_DENIED_RANGE = 5,
 
 	CHARGES = {
-		-- Designer Events
+		-- Shared Events
 		FabricDunk = 20,
+		FabricShred = 20,
 		FabricPass = 10,
 		TeamRescue = 25,
 		AbilityHit = 5,
 		CloseDodge = 3,
 
-		-- Critic Events
+		-- Freeze Events (Both Teams)
 		FreezeDesigner = 30,
+		FreezeCritic = 30,
 		DunkDenied = 35,
+		ShredDenied = 35,
 		FinalCancel = 40,
 		InterceptPass = 15,
 	}
