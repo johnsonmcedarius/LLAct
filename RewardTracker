@@ -82,6 +82,17 @@ function RewardTracker.OnFabricDunk(player)
 	print("[REWARDS] " .. player.Name .. " dunked fabric! Total Dunks: " .. (s and s.dunks or 0))
 end
 
+function RewardTracker.OnFabricShred(player)
+	local s = getScore(player)
+	if s then 
+		s.dunks += 1 
+		s.totalPoints += Config.POINTS.SHRED_FABRIC or 50
+	end
+	giveReward(player, "FabricShred")
+
+	print("[REWARDS] " .. player.Name .. " shredded fabric! Total Shreds: " .. (s and s.dunks or 0))
+end
+
 function RewardTracker.OnUnfreezeAlly(player)
 	giveReward(player, "UnfreezeAlly")
 	local s = getScore(player)
@@ -96,6 +107,24 @@ function RewardTracker.OnFreezeDesigner(critic)
 	if s then s.freezes += 1 end
 	local lb = getDailyLookbook()
 	if lb then lb.AddProgress(critic, "Freezes", 1) end
+end
+
+function RewardTracker.OnFreezeCritic(designer)
+	giveReward(designer, "FreezeCritic")
+	local s = getScore(designer)
+	if s then s.freezes += 1 end
+	local lb = getDailyLookbook()
+	if lb then lb.AddProgress(designer, "Freezes", 1) end
+end
+
+-- Universal freeze reward (works for both teams)
+function RewardTracker.OnFreezePlayer(attacker)
+	local attackerTeam = attacker.Team and attacker.Team.Name
+	if attackerTeam == "Designers" then
+		RewardTracker.OnFreezeCritic(attacker)
+	elseif attackerTeam == "Critics" then
+		RewardTracker.OnFreezeDesigner(attacker)
+	end
 end
 
 function RewardTracker.OnSabotage(critic)
@@ -206,7 +235,7 @@ task.spawn(function()
 	end
 end)
 
--- ── MVP calculation ───────────────────────────────────────────────────────────
+-- ── MVP calculation ──
 local function calculateMVP()
 	local designerMVP, criticMVP
 	local bestDesignerScore, bestCriticScore = -1, -1
@@ -216,13 +245,16 @@ local function calculateMVP()
 		if not s then continue end
 
 		if p.Team and p.Team.Name == Config.TEAMS.DESIGNER then
+			-- Designers: Dunks + Fabric Collected + Unfreezes + Never Frozen Bonus
 			local score = (s.dunks * Config.MVP_WEIGHTS.DUNK_MULTIPLIER) 
 				+ (s.fabricCount * Config.MVP_WEIGHTS.FABRIC_MULTIPLIER) 
 				+ (s.unfreezes * Config.MVP_WEIGHTS.UNFREEZE_MULTIPLIER) 
 				+ (s.neverFrozen and Config.MVP_WEIGHTS.NEVER_FROZEN_BONUS or 0)
 			if score > bestDesignerScore then bestDesignerScore = score designerMVP = p end
 		elseif p.Team and p.Team.Name == Config.TEAMS.CRITIC then
-			local score = (s.freezes * Config.MVP_WEIGHTS.FREEZE_MULTIPLIER) 
+			-- Critics: Shreds (dunks) + Freezes + Sabotages
+			local score = (s.dunks * Config.MVP_WEIGHTS.DUNK_MULTIPLIER) 
+				+ (s.freezes * Config.MVP_WEIGHTS.FREEZE_MULTIPLIER) 
 				+ (s.sabotages * Config.MVP_WEIGHTS.SABOTAGE_MULTIPLIER)
 			if score > bestCriticScore then bestCriticScore = score criticMVP = p end
 		end
