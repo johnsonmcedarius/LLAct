@@ -14,6 +14,7 @@ local SharedConfig = {
 	INTERMISSION_DURATION = 15,
 	RACK_COOLDOWN = 5,
 	PASS_RANGE = 8,
+	FREEZE_COOLDOWN = 4.0,  -- Anti-spam for weapon freeze attempts
 
 	-- ── Sabotage Balance ──
 	SABOTAGE_LIMIT = 2,       
