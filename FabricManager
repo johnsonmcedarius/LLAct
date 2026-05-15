@@ -260,20 +260,27 @@ local function setupFabricBin(bin)
 		local player = Players:GetPlayerFromCharacter(hit.Parent)
 		if not player or not (player.Team and player.Team.Name == GameSettings.DesignerTeamName) then return end
 		if depositing[player.UserId] then return end
-		if bin:GetAttribute("IsSabotaged") then return end -- Block if sabotaged
 
 		local fabricTool = hit.Parent:FindFirstChild("FBRoll") or player.Backpack:FindFirstChild("FBRoll")
 		if not fabricTool then return end
 
 		depositing[player.UserId] = true
-		fabricTool:Destroy()
+		fabricTool:Destroy()  -- ALWAYS destroy the fabric
 
-		designerScore += 1
-		UpdateDualScoreUI()
+		if bin:GetAttribute("IsSabotaged") then
+			-- Sabotaged: Take but don't count
+			VFX.Play("SabotagedDeposit", hitbox.Position)
+			ShowRewardPopup:FireClient(player, "SABOTAGED!", "Fabric lost!")
+			print("[FABRIC] " .. player.Name .. " deposited to sabotaged bin - no score!")
+		else
+			-- Normal: Score it
+			designerScore += 1
+			UpdateDualScoreUI()
 
-		VFX.Play("FabricDeposit", hitbox.Position)
-		ShowstopperService.OnFabricDunk(player)
-		ShowRewardPopup:FireClient(player, "+25 XP", "+10 Coins")
+			VFX.Play("FabricDeposit", hitbox.Position)
+			ShowstopperService.OnFabricDunk(player)
+			ShowRewardPopup:FireClient(player, "+25 XP", "+10 Coins")
+		end
 
 		task.delay(0.5, function() depositing[player.UserId] = nil end)
 	end)
@@ -300,22 +307,29 @@ local function setupFabricShredder(shredder)
 		local player = Players:GetPlayerFromCharacter(hit.Parent)
 		if not player or not (player.Team and player.Team.Name == GameSettings.CriticTeamName) then return end
 		if depositing[player.UserId] then return end
-		if shredder:GetAttribute("IsSabotaged") then return end -- Block if sabotaged
 
 		local fabricTool = hit.Parent:FindFirstChild("FBRoll") or player.Backpack:FindFirstChild("FBRoll")
 		if not fabricTool then return end
 
 		depositing[player.UserId] = true
-		fabricTool:Destroy()
+		fabricTool:Destroy()  -- ALWAYS destroy the fabric
 
-		criticScore += 1
-		UpdateDualScoreUI()
+		if shredder:GetAttribute("IsSabotaged") then
+			-- Sabotaged: Take but don't count
+			VFX.Play("SabotagedShred", hitbox.Position)
+			ShowRewardPopup:FireClient(player, "SABOTAGED!", "Fabric lost!")
+			print("[FABRIC] " .. player.Name .. " shredded at sabotaged shredder - no score!")
+		else
+			-- Normal: Score it
+			criticScore += 1
+			UpdateDualScoreUI()
 
-		VFX.Play("FabricShred", hitbox.Position)
-		if ShowstopperService.OnFabricShred then
-			ShowstopperService.OnFabricShred(player)
+			VFX.Play("FabricShred", hitbox.Position)
+			if ShowstopperService.OnFabricShred then
+				ShowstopperService.OnFabricShred(player)
+			end
+			ShowRewardPopup:FireClient(player, "+25 XP", "+10 Coins")
 		end
-		ShowRewardPopup:FireClient(player, "+25 XP", "+10 Coins")
 
 		task.delay(0.5, function() depositing[player.UserId] = nil end)
 	end)
