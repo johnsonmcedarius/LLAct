@@ -28,6 +28,7 @@ end
 
 local UpdateDualScore = getRemote("UpdateDualScore")
 local SabotagePing = getRemote("SabotagePing")
+local ObjectiveWarning = getRemote("ObjectiveWarning")
 local RackStateChanged = getRemote("RackStateChanged")
 local ShowRewardPopup = getRemote("ShowRewardPopup")
 
@@ -354,7 +355,14 @@ local function setupBinSabotage(bin)
 		bin:SetAttribute("IsSabotaged", true)
 		VFX.PlaySabotageVFX(bin)
 		SoundService.FireToAll("HairsprayHiss", bin:GetPivot().Position)
-		SabotagePing:FireAllClients(bin)
+		-- Notify affected team (Designers) their bin is sabotaged
+		SabotagePing:FireAllClients(bin, "Designers", "Collection Bin")
+		ObjectiveWarning:FireAllClients("Designers", true)
+		-- Global announcement
+		local Announcer = ServiceRegistry.Get("ShowstopperAnnouncer")
+		if Announcer and Announcer.AnnounceSabotage then
+			Announcer.AnnounceSabotage("Designers", "Collection Bin")
+		end
 
 		-- Add Reboot prompt for Designers
 		local rebootPrompt = Instance.new("ProximityPrompt")
@@ -371,6 +379,8 @@ local function setupBinSabotage(bin)
 			rebootPrompt:Destroy()
 			VFX.Play("SabotageClear", bin:GetPivot().Position)
 			SoundService.FireToAll("Unsabotage", bin:GetPivot().Position)
+			-- Clear warning for Designers
+			ObjectiveWarning:FireAllClients("Designers", false)
 		end)
 	end)
 end
@@ -392,7 +402,14 @@ local function setupShredderSabotage(shredder)
 		shredder:SetAttribute("IsSabotaged", true)
 		VFX.PlaySabotageVFX(shredder)
 		SoundService.FireToAll("HairsprayHiss", shredder:GetPivot().Position)
-		SabotagePing:FireAllClients(shredder)
+		-- Notify affected team (Critics) their shredder is sabotaged
+		SabotagePing:FireAllClients(shredder, "Critics", "Industrial Shredder")
+		ObjectiveWarning:FireAllClients("Critics", true)
+		-- Global announcement
+		local Announcer = ServiceRegistry.Get("ShowstopperAnnouncer")
+		if Announcer and Announcer.AnnounceSabotage then
+			Announcer.AnnounceSabotage("Critics", "Industrial Shredder")
+		end
 
 		-- Add Reboot prompt for Critics
 		local rebootPrompt = Instance.new("ProximityPrompt")
@@ -409,6 +426,8 @@ local function setupShredderSabotage(shredder)
 			rebootPrompt:Destroy()
 			VFX.Play("SabotageClear", shredder:GetPivot().Position)
 			SoundService.FireToAll("Unsabotage", shredder:GetPivot().Position)
+			-- Clear warning for Critics
+			ObjectiveWarning:FireAllClients("Critics", false)
 		end)
 	end)
 end
