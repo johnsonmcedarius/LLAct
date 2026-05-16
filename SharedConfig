@@ -102,6 +102,10 @@ local SharedConfig = {
 		ApplyPressure     = {XP = 10,   Coins = 3},
 		DesignerMVP       = {XP = 100,  Coins = 50},
 		CriticMVP         = {XP = 100,  Coins = 50},
+		
+		-- PHASE 7: Universal objective completion reward
+		-- DataManager doesn't need to check which team did what
+		ObjectiveComplete  = {XP = 25,   Coins = 10},
 	},
 
 	-- ── MVP Scoring Weights ──
@@ -141,6 +145,16 @@ local SharedConfig = {
 		JUMPPAD = "JumpPad",
 		DESIGNER_PROMPT = "DesignerPrompt",
 		CRITIC_PROMPT = "CriticPrompt",
+	},
+
+	-- ── Hitbox Parity (PHASE 2: Anti Pay-to-Win) ──
+	HITBOX_PARITY = {
+		-- Standard character hitbox dimensions
+		VALID_HITBOX_SIZE = Vector3.new(4, 5, 1),
+		-- Maximum allowed deviation from standard (percentage)
+		ALLOWED_DEVIATION = 0.1, -- 10% tolerance
+		-- Whether to log warnings for non-compliant skins
+		ENABLE_VALIDATION = true,
 	},
 
 	-- ── Character Stats & Abilities ──
