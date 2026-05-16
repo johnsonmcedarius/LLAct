@@ -1,27 +1,22 @@
-HUDModule_Banners (ModuleScript)
--- Handles: role reveal, trend tracker, 75% warning, showstopper announce,
---          cancelled banner, sabotage ping, elimination banner
--- ============================================================
---[[
 local HUDModule_Banners = {}
- 
+
 function HUDModule_Banners.Init(screenGui, remotes, SoundService, player)
 	local TweenService = game:GetService("TweenService")
- 
+
 	local TrendTrackerActivate = remotes:WaitForChild("TrendTrackerActivate")
 	local Show75Warning        = remotes:WaitForChild("Show75Warning")
 	local ShowstopperAnnounce  = remotes:WaitForChild("ShowstopperAnnounce")
 	local ShowCancelledBanner  = remotes:WaitForChild("ShowCancelledBanner")
 	local SabotagePing         = remotes:WaitForChild("SabotagePing")
 	local PlayerEliminated     = remotes:WaitForChild("PlayerEliminated")
- 
+
 	local StatusValues = game:GetService("ReplicatedStorage"):WaitForChild("StatusValues")
 	local StatusText   = StatusValues:WaitForChild("StatusText")
- 
+
 	local function getFrame(name)
 		return screenGui:FindFirstChild(name, true)
 	end
- 
+
 	local function flashBanner(bannerName, duration, color)
 		local banner = getFrame(bannerName)
 		if not banner then return end
@@ -40,7 +35,7 @@ function HUDModule_Banners.Init(screenGui, remotes, SoundService, player)
 			task.delay(0.6, function() banner.Visible = false end)
 		end)
 	end
- 
+
 	-- Role reveal
 	local roleRevealShown = false
 	StatusText:GetPropertyChangedSignal("Value"):Connect(function()
@@ -71,35 +66,35 @@ function HUDModule_Banners.Init(screenGui, remotes, SoundService, player)
 			roleRevealShown = false
 		end
 	end)
- 
+
 	-- Trend Tracker banner
 	TrendTrackerActivate.OnClientEvent:Connect(function(duration)
 		SoundService.PlayLocal("TrendTrackerOn")
 		flashBanner("TrendTrackerBanner", duration, Color3.fromRGB(255, 50, 150))
 	end)
- 
+
 	-- 75% warning
 	Show75Warning.OnClientEvent:Connect(function()
 		SoundService.PlayLocal("TrendTrackerWarning")
 		flashBanner("WarningBanner", 4, Color3.fromRGB(255, 60, 0))
 	end)
- 
+
 	-- Showstopper announce slide-in banner
 	ShowstopperAnnounce.OnClientEvent:Connect(function(playerName, title, message)
 		local banner = getFrame("ShowstopperAnnounceBanner")
 		if not banner then return end
 		local label = banner:FindFirstChildOfClass("TextLabel")
 		if label then label.Text = message end
- 
+
 		-- Slide in from top
 		banner.Position = UDim2.new(0.5, 0, -0.1, 0)
 		banner.Visible  = true
 		TweenService:Create(banner, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
 			Position = UDim2.new(0.5, 0, 0.05, 0)
 		}):Play()
- 
+
 		SoundService.PlayLocal("ShowstopperActivate")
- 
+
 		task.delay(4, function()
 			TweenService:Create(banner, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
 				Position = UDim2.new(0.5, 0, -0.1, 0)
@@ -107,7 +102,7 @@ function HUDModule_Banners.Init(screenGui, remotes, SoundService, player)
 			task.delay(0.5, function() banner.Visible = false end)
 		end)
 	end)
- 
+
 	-- Cancelled banner
 	ShowCancelledBanner.OnClientEvent:Connect(function(cancelledName, message)
 		local banner = getFrame("EliminationBanner")
@@ -121,18 +116,50 @@ function HUDModule_Banners.Init(screenGui, remotes, SoundService, player)
 			task.delay(0.7, function() banner.Visible = false end)
 		end)
 	end)
- 
-	-- Sabotage ping
-	SabotagePing.OnClientEvent:Connect(function(rack)
-		if not (player.Team and player.Team.Name == "Critics") then return end
+
+	-- Sabotage announce - dramatic global announcement
+	local SabotageAnnounce = remotes:WaitForChild("SabotageAnnounce")
+	SabotageAnnounce.OnClientEvent:Connect(function(teamName, objectName, message)
+		-- Only show to the affected team
+		if not (player.Team and player.Team.Name == teamName) then return end
+		
+		-- Flash dramatic banner
+		SoundService.PlayLocal("PaparazziStorm")
+		flashBanner("SabotagePingBanner", 4, Color3.fromRGB(255, 0, 80))
+		
+		-- Update banner text
+		local banner = getFrame("SabotagePingBanner")
+		if banner then
+			local label = banner:FindFirstChildOfClass("TextLabel")
+			if label then label.Text = message end
+		end
+	end)
+
+	-- Sabotage ping - now receives (object, sabotagedTeam, objectName)
+	-- Only show to the AFFECTED team
+	SabotagePing.OnClientEvent:Connect(function(object, sabotagedTeam, objectName)
+		if not (player.Team and player.Team.Name == sabotagedTeam) then return end
+		
+		-- Team-specific messages
+		local message = sabotagedTeam == "Designers" 
+			and "YOUR COLLECTION IS COMPROMISED!"
+			or "YOUR INDUSTRIAL SHREDDER IS SABOTAGED!"
+		
 		SoundService.PlayLocal("PaparazziStorm")
 		flashBanner("SabotagePingBanner", 3.5, Color3.fromRGB(255, 50, 50))
+		
+		-- Update banner text if label exists
+		local banner = getFrame("SabotagePingBanner")
+		if banner then
+			local label = banner:FindFirstChildOfClass("TextLabel")
+			if label then label.Text = message end
+		end
 	end)
- 
+
 	-- Elimination
 	PlayerEliminated.OnClientEvent:Connect(function(eliminatedName)
 		flashBanner("EliminationBanner", 3, Color3.fromRGB(200, 0, 0))
 	end)
 end
- 
+
 return HUDModule_Banners
