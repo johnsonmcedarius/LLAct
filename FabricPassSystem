@@ -23,6 +23,7 @@ local ShowRewardPopup = getRemote("ShowRewardPopup")
 
 local PASS_RANGE     = Config.PASS_RANGE
 local DESIGNER_TEAM  = Config.TEAMS.DESIGNER
+local CRITIC_TEAM    = Config.TEAMS.CRITIC
 local PASS_DEBOUNCE  = 1.5 
 local UPDATE_INTERVAL = 0.3
 
@@ -48,12 +49,21 @@ local function isDesigner(player)
     return player.Team and player.Team.Name == DESIGNER_TEAM
 end
 
+local function isCritic(player)
+    return player.Team and player.Team.Name == CRITIC_TEAM
+end
+
+local function isSameTeam(p1, p2)
+    return p1.Team and p2.Team and p1.Team.Name == p2.Team.Name
+end
+
 -------------------------------------------------
 -- Core pass logic (server-authoritative)
+-- PHASE 3: Now works for both Designers AND Critics
 -------------------------------------------------
 local function executePass(holder, targetPlayer)
-    if not isDesigner(holder) then return end
-    if not (targetPlayer and isDesigner(targetPlayer)) then return end
+    -- Both teams can now pass fabric to teammates
+    if not isSameTeam(holder, targetPlayer) then return end
     if holder == targetPlayer then return end
 
     local now = os.clock()
@@ -75,7 +85,7 @@ local function executePass(holder, targetPlayer)
         return 
     end
 
-    print("[PASS] " .. holder.Name .. " -> " .. targetPlayer.Name)
+    print("[PASS] " .. holder.Name .. " -> " .. targetPlayer.Name .. " (" .. holder.Team.Name .. ")")
 
     if holder.Character then
         holder.Character:SetAttribute("IsPassing", true)
@@ -189,6 +199,7 @@ end
 
 -------------------------------------------------
 -- Update Loop - Find nearby receivers and create prompts
+-- PHASE 3: Works for both Designers AND Critics
 -------------------------------------------------
 local function updatePromptsForHolder(holder)
     if not getFabricTool(holder) then
@@ -203,7 +214,8 @@ local function updatePromptsForHolder(holder)
     local nearbyReceivers = {}
     for _, p in ipairs(Players:GetPlayers()) do
         if p == holder then continue end
-        if not isDesigner(p) then continue end
+        -- PHASE 3: Both teams can pass to teammates
+        if not isSameTeam(holder, p) then continue end
         if getFabricTool(p) then continue end
         
         local pr = getRoot(p)
@@ -241,13 +253,15 @@ end
 
 -------------------------------------------------
 -- Main Update Loop
+-- PHASE 3: Both teams can pass fabric
 -------------------------------------------------
 task.spawn(function()
     while true do
         task.wait(UPDATE_INTERVAL)
         
         for _, p in ipairs(Players:GetPlayers()) do
-            if isDesigner(p) and getFabricTool(p) then
+            -- PHASE 3: Both Designers AND Critics can pass
+            if (isDesigner(p) or isCritic(p)) and getFabricTool(p) then
                 updatePromptsForHolder(p)
             end
         end
@@ -256,10 +270,11 @@ end)
 
 -------------------------------------------------
 -- Watcher Logic
+-- PHASE 3: Both teams can pass fabric
 -------------------------------------------------
 local function watchPlayer(player)
     local function onChildAdded(child)
-        if child.Name == "FBRoll" and isDesigner(player) then
+        if child.Name == "FBRoll" and (isDesigner(player) or isCritic(player)) then
             print("[FABRIC] " .. player.Name .. " picked up FBRoll - prompts will appear on nearby teammates")
         end
     end
