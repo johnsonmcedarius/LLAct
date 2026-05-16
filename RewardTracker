@@ -148,6 +148,11 @@ function RewardTracker.OnApplyPressure(critic)
 	giveReward(critic, "ApplyPressure")
 end
 
+-- PHASE 7: Universal objective completion reward
+function RewardTracker.OnObjectiveComplete(player)
+	giveReward(player, "ObjectiveComplete")
+end
+
 function RewardTracker.GetScore(player)
 	return getScore(player)
 end
@@ -196,11 +201,21 @@ task.spawn(function()
 end)
 
 -- ── Pressure Detection ──
+-- PHASE 5: Symmetric pressure detection for BOTH teams
+local designerPressureTimers = {}
+local criticPressureTimers = {}
+
 task.spawn(function()
 	while true do
 		task.wait(1)
-		if not roundActive then pressureTimers = {} continue end
+		if not roundActive then 
+			pressureTimers = {} 
+			designerPressureTimers = {}
+			criticPressureTimers = {}
+			continue 
+		end
 
+		-- ── CRITICS PRESSURING DESIGNERS (Original Logic) ──
 		for _, critic in ipairs(Players:GetPlayers()) do
 			if not (critic.Team and critic.Team.Name == Config.TEAMS.CRITIC) then continue end
 			local cr = critic.Character and critic.Character:FindFirstChild("HumanoidRootPart")
@@ -230,6 +245,40 @@ task.spawn(function()
 				end
 			else
 				pressureTimers[critic.UserId] = nil
+			end
+		end
+
+		-- ── DESIGNERS PRESSURING CRITICS (NEW: Symmetric Logic) ──
+		for _, designer in ipairs(Players:GetPlayers()) do
+			if not (designer.Team and designer.Team.Name == Config.TEAMS.DESIGNER) then continue end
+			local dr = designer.Character and designer.Character:FindFirstChild("HumanoidRootPart")
+			if not dr then continue end
+
+			local closeCritic, closestDist = nil, math.huge
+			for _, critic in ipairs(Players:GetPlayers()) do
+				if not (critic.Team and critic.Team.Name == Config.TEAMS.CRITIC) then continue end
+				local cr = critic.Character and critic.Character:FindFirstChild("HumanoidRootPart")
+				if not cr then continue end
+				local dist = (dr.Position - cr.Position).Magnitude
+				if dist < Config.PRESSURE.DETECTION_RANGE and dist < closestDist then
+					closestDist = dist
+					closeCritic = critic
+				end
+			end
+
+			if closeCritic then
+				local entry = designerPressureTimers[designer.UserId]
+				if entry and entry.targetUserId == closeCritic.UserId then
+					if os.clock() - entry.startTime >= Config.PRESSURE.TIME_THRESHOLD then
+						-- Designers also get pressure rewards for pressuring Critics
+						RewardTracker.OnApplyPressure(designer)
+						designerPressureTimers[designer.UserId] = nil
+					end
+				else
+					designerPressureTimers[designer.UserId] = {startTime = os.clock(), targetUserId = closeCritic.UserId}
+				end
+			else
+				designerPressureTimers[designer.UserId] = nil
 			end
 		end
 	end
@@ -335,6 +384,8 @@ end)
 RoundEvents.Intermission.Event:Connect(function()
 	roundScores    = {}
 	pressureTimers = {}
+	designerPressureTimers = {}
+	criticPressureTimers = {}
 	print("[REWARDS] Stats cleared for Intermission.")
 end)
 
@@ -345,6 +396,8 @@ end)
 Players.PlayerRemoving:Connect(function(p)
 	roundScores[p.UserId]    = nil
 	pressureTimers[p.UserId] = nil
+	designerPressureTimers[p.UserId] = nil
+	criticPressureTimers[p.UserId] = nil
 end)
 
 ServiceRegistry.Register("RewardTracker", RewardTracker)
