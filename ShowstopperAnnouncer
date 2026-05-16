@@ -1,7 +1,3 @@
--- ShowstopperAnnouncer (Script in ServerScriptService)
--- FIXED: ServiceRegistry replaces _G.ShowstopperService and _G.ShowstopperAnnouncer
--- Registers itself so RelevanceSystem can call it via ServiceRegistry.Get()
-
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
@@ -19,6 +15,7 @@ end
 local ShowstopperAnnounce = getRemote("ShowstopperAnnounce")
 local ShowCancelledBanner = getRemote("ShowCancelledBanner")
 local ActivateShowstopper = getRemote("ActivateShowstopper")
+local SabotageAnnounce = getRemote("SabotageAnnounce")
 
 local ShowstopperTitles = {
 	Trendsetter     = "THE TALENT: TRENDSETTER",
@@ -60,6 +57,19 @@ local ShowstopperAnnouncer = {
 		local msg = cancelledPlayer.Name .. " HAS BEEN CANCELLED"
 		ShowCancelledBanner:FireAllClients(cancelledPlayer.Name, msg)
 		print("[ANNOUNCE] " .. msg)
+	end,
+
+	AnnounceSabotage = function(teamName, objectName)
+		-- Team-specific dramatic messages
+		local message = teamName == "Designers" 
+			and "THE COLLECTION IS COMPROMISED!"
+			or "THE INDUSTRIAL SHREDDER IS SABOTAGED!"
+		
+		local fullMessage = objectName .. " - " .. message
+		print("[ANNOUNCE] " .. fullMessage)
+		
+		-- Fire to all clients - HUDModule_Banners will filter by team
+		SabotageAnnounce:FireAllClients(teamName, objectName, message)
 	end,
 }
 
