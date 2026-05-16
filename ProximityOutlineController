@@ -1,0 +1,93 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local Config = require(ReplicatedStorage:WaitForChild("SharedConfig"))
+
+-- ── Screen Outline Configuration ─────────────────────────────────────────────
+local PROXIMITY_RANGE = 15 -- Studs
+local DESIGNER_COLOR = Color3.fromRGB(100, 150, 255) -- Blue outline for Designers
+local CRITIC_COLOR = Color3.fromRGB(150, 50, 200) -- Purple outline for Critics
+local OUTLINE_THICKNESS = 8
+local OUTLINE_TRANSPARENCY = 0.85
+
+-- ── Create ScreenGui with Outline Frame ───────────────────────────────────────
+local outlineGui = Instance.new("ScreenGui")
+outlineGui.Name = "ProximityOutline"
+outlineGui.ResetOnSpawn = false
+outlineGui.IgnoreGuiInset = true
+outlineGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+outlineGui.Parent = player:WaitForChild("PlayerGui")
+
+local outline = Instance.new("Frame")
+outline.Name = "Outline"
+outline.Size = UDim2.new(1, 0, 1, 0)
+outline.Position = UDim2.new(0, 0, 0, 0)
+outline.BackgroundTransparency = 1
+outline.BorderSizePixel = OUTLINE_THICKNESS
+outline.BorderColor3 = Color3.new(1, 1, 1)
+outline.Visible = false
+outline.Parent = outlineGui
+
+-- Add corner rounding for aesthetic
+local uiStroke = Instance.new("UIStroke")
+uiStroke.Thickness = OUTLINE_THICKNESS
+uiStroke.Transparency = OUTLINE_TRANSPARENCY
+uiStroke.Parent = outline
+
+-- ── Proximity Detection Loop ────────────────────────────────────────────────
+local function updateOutline()
+	local char = player.Character
+	if not char then 
+		outline.Visible = false
+		return 
+	end
+	
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then 
+		outline.Visible = false
+		return 
+	end
+	
+	local myTeam = player.Team and player.Team.Name
+	if not myTeam or (myTeam ~= "Designers" and myTeam ~= "Critics") then
+		outline.Visible = false
+		return
+	end
+	
+	local enemyTeam = myTeam == "Designers" and "Critics" or "Designers"
+	local nearestDist = math.huge
+	
+	-- Find nearest enemy player
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p == player then continue end
+		if not p.Team or p.Team.Name ~= enemyTeam then continue end
+		
+		local pChar = p.Character
+		if not pChar then continue end
+		
+		local pRoot = pChar:FindFirstChild("HumanoidRootPart")
+		if not pRoot then continue end
+		
+		local dist = (root.Position - pRoot.Position).Magnitude
+		nearestDist = math.min(nearestDist, dist)
+	end
+	
+	-- Show outline if enemy is within proximity range
+	if nearestDist < PROXIMITY_RANGE then
+		outline.Visible = true
+		uiStroke.Color = myTeam == "Designers" and DESIGNER_COLOR or CRITIC_COLOR
+		
+		-- Intensity based on distance (closer = more visible)
+		local intensity = 1 - (nearestDist / PROXIMITY_RANGE)
+		uiStroke.Transparency = OUTLINE_TRANSPARENCY + (intensity * 0.1)
+	else
+		outline.Visible = false
+	end
+end
+
+-- ── Run Loop ─────────────────────────────────────────────────────────────────
+RunService.RenderStepped:Connect(updateOutline)
+
+print("[PROXIMITY] Outline controller initialized.")
