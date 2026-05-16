@@ -27,7 +27,40 @@ local FreezeEvent       = Remotes:WaitForChild("FreezeEvent")
 local frozenPlayers = {}
 local frozenCritics = {}
 
--- ── Utilities ────────────────────────────────────────────────────────────────
+-- ── Clash Mechanic: Track pending freezes for simultaneous detection ──
+local pendingFreezes = {}  -- [playerUserId] = {targetUserId, timestamp}
+local CLASH_WINDOW = 0.1   -- 100ms window for "simultaneous" freeze
+local CLASH_PUSH_FORCE = 50
+
+-- ── Clash Mechanic: Pushback on simultaneous freeze ──
+local function applyClashPushback(p1, p2)
+	local p1Root = p1.Character and p1.Character:FindFirstChild("HumanoidRootPart")
+	local p2Root = p2.Character and p2.Character:FindFirstChild("HumanoidRootPart")
+	if not p1Root or not p2Root then return end
+
+	-- Calculate pushback direction (away from each other)
+	local dir = (p1Root.Position - p2Root.Position).Unit
+	if dir.Magnitude == 0 then
+		dir = Vector3.new(1, 0, 0)  -- Default direction if on same position
+	end
+
+	-- Apply velocity to both players
+	p1Root.AssemblyLinearVelocity = dir * CLASH_PUSH_FORCE
+	p2Root.AssemblyLinearVelocity = -dir * CLASH_PUSH_FORCE
+
+	-- VFX and sound
+	local midPoint = (p1Root.Position + p2Root.Position) / 2
+	VFX.Play("ClashSpark", midPoint)
+	SoundService.FireToAll("ClashSound", midPoint)
+
+	-- UI notification
+	local ClashNotification = Remotes:FindFirstChild("ClashNotification")
+	if ClashNotification then
+		ClashNotification:FireAllClients(p1.Name, p2.Name)
+	end
+
+	print("[TAG] CLASH! " .. p1.Name .. " and " .. p2.Name .. " froze simultaneously - both pushed back!")
+end
 local function createCountdownBillboard(root)
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "CancelCountdown"
@@ -363,7 +396,7 @@ RoundEvents.Intermission.Event:Connect(function()
 	end
 end)
 
--- UPDATED: Universal Freeze Trigger (Both Teams)
+-- UPDATED: Universal Freeze Trigger (Both Teams) with Clash Mechanic
 FreezeEvent.OnServerEvent:Connect(function(player, targetChar)
 	-- 1. TEAM CHECK: Must be on a valid team
 	if not (player.Team and (player.Team.Name == "Designers" or player.Team.Name == "Critics")) then return end
@@ -394,6 +427,31 @@ FreezeEvent.OnServerEvent:Connect(function(player, targetChar)
 
 	-- Check if already frozen
 	if frozenPlayers[targetPlayer.UserId] or frozenCritics[targetPlayer.UserId] then return end
+
+	-- ── CLASH MECHANIC: Check for simultaneous freeze ──
+	local now = os.clock()
+	local pending = pendingFreezes[targetPlayer.UserId]
+
+	if pending and (now - pending.timestamp) < CLASH_WINDOW then
+		-- CLASH DETECTED! Both players tried to freeze each other simultaneously
+		applyClashPushback(player, targetPlayer)
+		pendingFreezes[player.UserId] = nil
+		pendingFreezes[targetPlayer.UserId] = nil
+		return  -- Neither gets frozen
+	end
+
+	-- Track this pending freeze for clash detection
+	pendingFreezes[player.UserId] = {
+		targetUserId = targetPlayer.UserId,
+		timestamp = now
+	}
+
+	-- Clear pending after window passes
+	task.delay(CLASH_WINDOW, function()
+		if pendingFreezes[player.UserId] and pendingFreezes[player.UserId].targetUserId == targetPlayer.UserId then
+			pendingFreezes[player.UserId] = nil
+		end
+	end)
 
 	TagManager.CheckDunkDenied(player, targetChar.HumanoidRootPart)
 	freezePlayer(targetPlayer, player)
