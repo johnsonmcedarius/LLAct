@@ -132,6 +132,49 @@ function DataManager.UpdateEquipped(player, key, value)
 	player:SetAttribute("Equipped" .. key, value)
 end
 
+-- ── Hitbox Parity Validation (PHASE 2) ──
+function DataManager.ValidateHitboxParity(player, character)
+	if not Config.HITBOX_PARITY or not Config.HITBOX_PARITY.ENABLE_VALIDATION then
+		return true
+	end
+
+	if not character then return false end
+
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return false end
+
+	local actualSize = hrp.Size
+	local validSize = Config.HITBOX_PARITY.VALID_HITBOX_SIZE
+	local maxDeviation = Config.HITBOX_PARITY.ALLOWED_DEVIATION
+
+	-- Check each dimension
+	local xDiff = math.abs(actualSize.X - validSize.X) / validSize.X
+	local yDiff = math.abs(actualSize.Y - validSize.Y) / validSize.Y
+	local zDiff = math.abs(actualSize.Z - validSize.Z) / validSize.Z
+
+	if xDiff > maxDeviation or yDiff > maxDeviation or zDiff > maxDeviation then
+		warn("[HITBOX] " .. player.Name .. " has non-compliant hitbox: " .. tostring(actualSize))
+		return false
+	end
+
+	return true
+end
+
+-- Validate all equipped items don't modify hitboxes
+function DataManager.ValidateEquippedItems(player)
+	local data = DataManager.GetData(player)
+	if not data then return true end
+
+	-- Check if any skin effects modify collision
+	local equippedSkin = data.Equipped and data.Equipped.SkinEffect
+	if equippedSkin and equippedSkin ~= "None" then
+		-- Log for audit (actual validation would check SkinEffectTemplates)
+		print("[HITBOX] Auditing " .. player.Name .. " skin effect: " .. equippedSkin)
+	end
+
+	return true
+end
+
 -- ── Session Handling ──
 local function PlayerAdded(player)
 	local store = ProfileStore.New("Player_Data_" .. Config.DATA_VERSION, STARTING_DATA)
