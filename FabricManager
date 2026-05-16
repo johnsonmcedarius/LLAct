@@ -70,6 +70,58 @@ local function isWithinRange(player, target)
 	return dist <= (Config.MAX_INTERACTION_DISTANCE or 30)
 end
 
+-- ── PHASE 8: Back-Anchor Logic for FBRoll ──
+-- Ensures fabric roll attaches to HumanoidRootPart, not limbs
+local function attachFabricToBack(player, tool)
+	local char = player.Character
+	if not char then return end
+	
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	
+	local handle = tool:FindFirstChild("Handle") or tool:FindFirstChild("BackHandle")
+	if not handle then return end
+	
+	-- Remove any existing welds
+	for _, child in ipairs(handle:GetChildren()) do
+		if child:IsA("WeldConstraint") or child:IsA("ManualWeld") then
+			child:Destroy()
+		end
+	end
+	
+	-- Create weld to HumanoidRootPart (centered on back)
+	local weld = Instance.new("WeldConstraint")
+	weld.Name = "BackWeld"
+	weld.Part0 = hrp
+	weld.Part1 = handle
+	weld.Parent = handle
+	
+	-- Position the handle on the player's back
+	handle.CFrame = hrp.CFrame * CFrame.new(0, 0, 1.5) * CFrame.Angles(0, math.rad(180), 0)
+	
+	print("[FABRIC] " .. player.Name .. " fabric roll anchored to HumanoidRootPart")
+end
+
+-- Watch for FBRoll equipment to apply back-anchor
+local function watchFabricEquipment(player)
+	local function onToolEquipped(tool)
+		if tool.Name == "FBRoll" then
+			attachFabricToBack(player, tool)
+		end
+	end
+	
+	local function onChildAdded(child)
+		if child:IsA("Tool") and child.Name == "FBRoll" then
+			-- Small delay to ensure tool is fully equipped
+			task.defer(function()
+				attachFabricToBack(player, child)
+			end)
+		end
+	end
+	
+	player.Character.ChildAdded:Connect(onChildAdded)
+end
+
 local function setRackState(rack, sabotaged)
 	local regular  = rack:FindFirstChild("RegularState")
 	local sabState = rack:FindFirstChild("SabotagedState")
@@ -477,6 +529,18 @@ end)
 CollectionService:GetInstanceAddedSignal("FabricShredders"):Connect(function(s)
 	setupFabricShredder(s)
 	setupShredderSabotage(s)
+end)
+
+-- PHASE 8: Watch for fabric equipment to apply back-anchor
+for _, player in ipairs(Players:GetPlayers()) do
+	if player.Character then
+		watchFabricEquipment(player)
+	end
+end
+Players.PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(function()
+		watchFabricEquipment(player)
+	end)
 end)
 
 ServiceRegistry.Register("FabricManager", FabricManager)
