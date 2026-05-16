@@ -1,7 +1,13 @@
 local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
 local VFX = {}
+
+-- ── VFX Culling Configuration ─────────────────────────────────────────────
+local MAX_VFX_RANGE = 100 -- Studs: effects beyond this are culled
+local LOCAL_ONLY_IMPORTANCE = true -- Enable local-only importance checks
 
 -- Pool storage (optional, used if USE_POOLING = true)
 local USE_POOLING = false
@@ -25,13 +31,49 @@ local function getVFXFolder()
 end
 
 -------------------------------------------------
+-- Get local player's position for culling
+-------------------------------------------------
+local function getLocalPlayerPosition()
+	local player = Players.LocalPlayer
+	if not player then return nil end
+	local character = player.Character
+	if not character then return nil end
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then return nil end
+	return root.Position
+end
+
+-------------------------------------------------
+-- Check if effect should be rendered (culling)
+-------------------------------------------------
+local function shouldRenderEffect(position, localOnly)
+	-- If this is a local-only effect, always render for the triggering player
+	if localOnly then
+		return true
+	end
+	
+	-- Distance-based culling for non-local effects
+	local localPos = getLocalPlayerPosition()
+	if not localPos then return true end -- Default to render if we can't check
+	
+	local distance = (position - localPos).Magnitude
+	return distance <= MAX_VFX_RANGE
+end
+
+-------------------------------------------------
 -- Play: clone and position an effect
 -- effectName: the name of the asset inside Assets/VFX
 -- position: Vector3
 -- parent: optional (defaults to workspace)
 -- lifetime: optional override for how long before Debris cleans it up
+-- localOnly: optional (if true, only renders for triggering player)
 -------------------------------------------------
-function VFX.Play(effectName, position, parent, lifetime)
+function VFX.Play(effectName, position, parent, lifetime, localOnly)
+	-- VFX Culling: Skip rendering if too far from local player
+	if not shouldRenderEffect(position, localOnly) then
+		return nil
+	end
+	
 	local vfxFolder = getVFXFolder()
 	if not vfxFolder then return end
 
@@ -78,6 +120,25 @@ function VFX.Play(effectName, position, parent, lifetime)
 	Debris:AddItem(clone, cleanupTime)
 
 	return clone
+end
+
+-------------------------------------------------
+-- PlayLocal: Effect that only renders for the local player
+-- Use for dash rainbows, personal ability effects, etc.
+-------------------------------------------------
+function VFX.PlayLocal(effectName, position, parent, lifetime)
+	return VFX.Play(effectName, position, parent, lifetime, true)
+end
+
+-------------------------------------------------
+-- PlayWithRange: Effect with custom max range
+-------------------------------------------------
+function VFX.PlayWithRange(effectName, position, maxRange, parent, lifetime)
+	local localPos = getLocalPlayerPosition()
+	if localPos and (position - localPos).Magnitude > maxRange then
+		return nil
+	end
+	return VFX.Play(effectName, position, parent, lifetime)
 end
 
 -------------------------------------------------
