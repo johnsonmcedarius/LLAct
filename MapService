@@ -57,5 +57,39 @@ function MapService.TeleportPlayers(players, spawns)
 	end
 end
 
+-- ── Zone System: Get zones by type (Neutral, DesignerProtected, CriticProtected) ──
+function MapService.GetZones(map, zoneType)
+	local zones = {}
+	for _, zone in ipairs(CollectionService:GetTagged(zoneType)) do
+		if zone:IsDescendantOf(map) and zone:IsA("BasePart") then
+			table.insert(zones, zone)
+		end
+	end
+	return zones
+end
+
+-- ── Zone System: Check if position is within a zone type ──
+function MapService.IsInZone(position, zoneType)
+	for _, zone in ipairs(CollectionService:GetTagged(zoneType)) do
+		if zone:IsA("BasePart") then
+			local dist = (position - zone.Position).Magnitude
+			local radius = math.max(zone.Size.X, zone.Size.Z) / 2
+			if dist <= radius then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+-- ── Zone System: Get all zone types for a map ──
+function MapService.GetAllZones(map)
+	return {
+		Neutral = MapService.GetZones(map, "NeutralZone"),
+		DesignerProtected = MapService.GetZones(map, "DesignerProtectedZone"),
+		CriticProtected = MapService.GetZones(map, "CriticProtectedZone"),
+	}
+end
+
 ServiceRegistry.Register("MapService", MapService)
 return MapService
