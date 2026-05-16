@@ -112,7 +112,7 @@ local function performDash()
 	-- Play Feedback
 	if track then track:Play(0.1) end
 	SoundService.PlayLocal("FashionDash") 
-	VFXModule.Play("DashRainbow", root.Position)
+	VFXModule.PlayLocal("DashRainbow", root.Position) -- Local-only for performance
 	MovementEffect:FireServer("Dash") 
 
 	-- Physics
