@@ -15,6 +15,12 @@ require(ServerScriptService:WaitForChild("MapService"))
 require(ServerScriptService:WaitForChild("TimerService"))
 require(ServerScriptService:WaitForChild("RoundEvents"))
 
+-- ── COLLISION SERVICE (Phase 4: Player-to-player Collision Management) ─────
+require(ServerScriptService:WaitForChild("CollisionService"))
+
+-- ── ROBLOX PLUS SERVICE (Phase 9: Subscription Integration) ──────────────
+require(ServerScriptService:WaitForChild("RobloxPlusService"))
+
 -- ── 3. GAMEPLAY & REWARD LOGIC ─────────────────────────────────────────────
 -- RewardTracker is REQUIRED for FabricManager to track XP/Coins.
 --require(ServerScriptService:WaitForChild("RewardTracker"))
